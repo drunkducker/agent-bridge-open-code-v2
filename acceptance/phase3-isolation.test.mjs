@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync, mkdirSync, symlinkSync, readlinkSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync, mkdirSync, symlinkSync, readlinkSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -126,6 +126,30 @@ test('git sandbox preserves internal relative links and remaps absolute source l
     }
   } finally {
     rmSync(d, { recursive: true, force: true });
+  }
+});
+
+test('sandbox recognizes absolute links written through an alias of the source parent', (t) => {
+  const parent = tmp();
+  const source = path.join(parent, 'source');
+  const parentAlias = path.join(path.dirname(parent), `${path.basename(parent)}-alias`);
+  mkdirSync(source);
+  writeFileSync(path.join(source, 'inside.txt'), 'aliased source\n');
+  try {
+    if (!linkOrSkip(t, parent, parentAlias, process.platform === 'win32' ? 'junction' : 'dir')) return;
+    if (!linkOrSkip(t, path.join(parentAlias, 'source', 'inside.txt'), path.join(source, 'absolute-alias.txt'), 'file')) return;
+
+    const sb = createSandbox(source);
+    try {
+      assert.equal(readFileSync(path.join(sb.cwd, 'absolute-alias.txt'), 'utf8'), 'aliased source\n');
+      assert.ok(readlinkSync(path.join(sb.cwd, 'absolute-alias.txt')).toLowerCase().includes(sb.root.toLowerCase()));
+      assert.deepEqual(sb.diff().files, [], 'the remapped alias link is part of the sandbox baseline');
+    } finally {
+      sb.cleanup();
+    }
+  } finally {
+    try { unlinkSync(parentAlias); } catch {}
+    rmSync(parent, { recursive: true, force: true });
   }
 });
 

@@ -42,7 +42,7 @@ export interface Sandbox {
 
 function normalizePath(p: string): string {
   try {
-    p = realpathSync(path.resolve(p));
+    p = realpathSync.native(path.resolve(p));
   } catch {
     p = path.resolve(p);
   }
@@ -50,6 +50,33 @@ function normalizePath(p: string): string {
     p = p[0].toUpperCase() + p.slice(1);
   }
   return path.normalize(p);
+}
+
+/** Rebase an alias through ancestors of the trusted root. Keep every component
+ * below root lexical so resolveContainedPath can inspect links. */
+function resolveRootAlias(root: string, target: string): string {
+  root = path.resolve(root);
+  target = path.resolve(target);
+  if (isWithin(root, target)) return target;
+  const parsed = path.parse(target);
+  const parts = path.relative(parsed.root, target).split(path.sep).filter(Boolean);
+  let prefix = parsed.root;
+  for (let i = 0; i < parts.length; i++) {
+    prefix = path.join(prefix, parts[i]);
+    // The final component can itself be a link. Only accept it when this is an
+    // alias spelling of root itself; never canonicalize an in-root target leaf.
+    try {
+      const canonicalPrefix = realpathSync.native(prefix);
+      if (isWithin(root, canonicalPrefix)) {
+        if (i === parts.length - 1 && path.normalize(canonicalPrefix) !== path.normalize(root)) return target;
+        return path.resolve(canonicalPrefix, ...parts.slice(i + 1));
+      }
+    } catch {
+      // Missing target components remain lexical and are checked by the caller.
+    }
+    if (i === parts.length - 1) break;
+  }
+  return target;
 }
 
 function isWithin(root: string, target: string): boolean {
@@ -98,7 +125,11 @@ function normalizeSandboxLinks(root: string, sourceRoot: string): boolean {
       if (stat.isSymbolicLink()) {
         const raw = readlinkSync(entry);
         if (path.isAbsolute(raw)) {
-          const absTarget = path.resolve(raw);
+          // Symlink text may use another spelling of the trusted root's parent
+          // (macOS /var -> /private/var, or Windows 8.3 names). Resolve only
+          // those parent aliases; keep all in-root components lexical for the
+          // contained-link walk below.
+          const absTarget = resolveRootAlias(sourceRoot, raw);
           if (isWithin(sourceRoot, absTarget)) {
             const sourceTarget = resolveContainedPath(sourceRoot, absTarget, entry);
             if (!existsSync(sourceTarget)) throw new Error(`Cannot remap dangling absolute symlink "${entry}"`);
@@ -109,10 +140,13 @@ function normalizeSandboxLinks(root: string, sourceRoot: string): boolean {
             unlinkSync(entry); // removes only this sandbox symlink, never its target
             symlinkSync(mapped, entry, process.platform === 'win32' ? (dirTarget ? 'junction' : 'file') : undefined);
             changed = true;
-          } else if (isWithin(root, absTarget)) {
-            resolveContainedPath(root, absTarget, entry);
           } else {
-            throw new Error(`Symlink "${entry}" escapes sandbox/source root: ${absTarget}`);
+            const sandboxTarget = resolveRootAlias(root, raw);
+            if (isWithin(root, sandboxTarget)) {
+              resolveContainedPath(root, sandboxTarget, entry);
+            } else {
+              throw new Error(`Symlink "${entry}" escapes sandbox/source root: ${absTarget}`);
+            }
           }
         } else {
           const target = path.resolve(path.dirname(entry), raw);

@@ -24,9 +24,9 @@ export interface AgentBridgeConfig {
 
 export function findProjectRoot(startDir: string = process.cwd()): string {
   let cur = path.resolve(startDir);
-  const userHome = path.resolve(homedir());
+  const userHome = canonicalDirectoryIdentity(homedir());
   const isSameDir = (a: string, b: string) =>
-    process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
+    canonicalDirectoryIdentity(a) === canonicalDirectoryIdentity(b);
 
   while (true) {
     if (existsSync(path.join(cur, '.agentbridge')) && !isSameDir(cur, userHome)) {
@@ -45,6 +45,19 @@ export function findProjectRoot(startDir: string = process.cwd()): string {
     cur = parent;
   }
   return path.resolve(startDir);
+}
+
+/** Compare physical directory identities so Windows 8.3 spellings and other
+ * filesystem aliases cannot make the user's home look like a project root. */
+function canonicalDirectoryIdentity(dir: string): string {
+  let resolved = path.resolve(dir);
+  try {
+    resolved = realpathSync.native(resolved);
+  } catch {
+    // Keep the lexical identity when the directory does not exist.
+  }
+  resolved = path.normalize(resolved);
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
 }
 
 export function globalConfigFile(env: NodeJS.ProcessEnv = process.env): string {

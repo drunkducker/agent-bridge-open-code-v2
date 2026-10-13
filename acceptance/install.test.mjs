@@ -3,7 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, realpathSync, writeFileSync, readFileSync, existsSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, realpathSync, writeFileSync, readFileSync, existsSync, mkdirSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -31,6 +31,18 @@ const skillOk = (d) => {
   const f = path.join(d.proj, '.agents', 'skills', 'agentbridge-delegate', 'SKILL.md');
   assert.ok(existsSync(f), f);
   assert.match(readFileSync(f, 'utf8'), /^---\r?\nname: agentbridge-delegate/);
+};
+// Install tests need a predictable fake Codex executable, independent of the host OS.
+const fakeCodex = (bin, source) => {
+  const script = path.join(bin, 'fake-codex.js');
+  writeFileSync(script, source);
+  if (process.platform === 'win32') {
+    writeFileSync(path.join(bin, 'codex.cmd'), '@"%~dp0fake-codex.js" %*\r\n');
+  } else {
+    const executable = path.join(bin, 'codex');
+    writeFileSync(executable, `#!/usr/bin/env node\n${source}`);
+    chmodSync(executable, 0o755);
+  }
 };
 // An env whose PATH holds no agent CLI, so `claude mcp add-json` reliably falls back to writing .mcp.json
 const abNoClaude = (d, args) => {
@@ -171,8 +183,7 @@ test('Codex install replaces the complete existing timeout literal and preserves
   const d = sandbox();
   const bin = path.join(d.r, 'bin');
   mkdirSync(bin);
-  writeFileSync(path.join(bin, 'codex.cmd'), '@"%~dp0fake-codex.js" %*\n');
-  writeFileSync(path.join(bin, 'fake-codex.js'), 'process.exit(0);\n');
+  fakeCodex(bin, 'process.exit(0);\n');
   const config = path.join(d.cx, 'config.toml');
   const env = {
     ...process.env,
@@ -183,7 +194,7 @@ test('Codex install replaces the complete existing timeout literal and preserves
     AGENTBRIDGE_HOME: path.join(d.r, 'ab'),
     PATH: `${bin}${path.delimiter}${process.env.PATH || ''}`,
   };
-  env.Path = env.PATH;
+  if (process.platform === 'win32') env.Path = env.PATH;
   for (const oldLiteral of ['60.5', '6.05e1', '6_000']) {
     writeFileSync(config, `# [mcp_servers.agentbridge]\n  [mcp_servers.agentbridge]\ntimeout = ${oldLiteral} # keep this note\nextra = "still here"\n  [other]\ntimeout = 777\n`);
     const r = await new Promise((resolve) => {
@@ -226,11 +237,7 @@ test('install all rejects invalid options before probing agent CLIs', async () =
   const bin = path.join(d.r, 'bin');
   const probeLog = path.join(d.r, 'probe.log');
   mkdirSync(bin);
-  writeFileSync(path.join(bin, 'codex.cmd'), '@"%~dp0fake-codex.js" %*\n');
-  writeFileSync(
-    path.join(bin, 'fake-codex.js'),
-    'require("node:fs").appendFileSync(process.env.PROBE_LOG, process.argv.slice(2).join(" ") + "\\n"); process.exit(0);\n'
-  );
+  fakeCodex(bin, 'require("node:fs").appendFileSync(process.env.PROBE_LOG, process.argv.slice(2).join(" ") + "\\n"); process.exit(0);\n');
   const env = {
     ...process.env,
     HOME: d.home,
@@ -240,7 +247,7 @@ test('install all rejects invalid options before probing agent CLIs', async () =
     PROBE_LOG: probeLog,
     PATH: `${bin}${path.delimiter}${process.env.PATH || ''}`,
   };
-  env.Path = env.PATH;
+  if (process.platform === 'win32') env.Path = env.PATH;
   const result = await new Promise((resolve) => {
     const p = spawn(process.execPath, [MAIN, 'install', 'all', '--permissions', 'read-onyl', '--cwd', d.proj], { env });
     let out = '', err = '';

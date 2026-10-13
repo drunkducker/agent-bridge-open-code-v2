@@ -210,10 +210,17 @@ test('runTurn timeout aborts a hanging setup RPC promptly with TIMEOUT', async (
   daemon['isAlive'] = true;
   daemon['p'] = { stdin: { write: () => {} }, child: { killed: false, exitCode: null } };
   daemon.ensureStarted = async (_env, signal) => daemon.sendRpc('thread/start', {}, { signal });
+  // A real child process keeps the event loop alive through its referenced stdio pipes.
+  // Keep the mocked child equivalent alive so unref'd daemon deadlines can fire on Node 22.
+  const childHandle = setInterval(() => {}, 1000);
   const t0 = Date.now();
-  await assert.rejects(async () => { for await (const _ of daemon.runTurn({ prompt: 'x', permissions: 'full', timeoutMs: 25 }, t0)) {} },
-    (e) => e instanceof AgentError && e.code === 'TIMEOUT');
-  assert.ok(Date.now() - t0 < 500, 'setup timeout should not wait for sendRpc default timeout');
+  try {
+    await assert.rejects(async () => { for await (const _ of daemon.runTurn({ prompt: 'x', permissions: 'full', timeoutMs: 25 }, t0)) {} },
+      (e) => e instanceof AgentError && e.code === 'TIMEOUT');
+    assert.ok(Date.now() - t0 < 500, 'setup timeout should not wait for sendRpc default timeout');
+  } finally {
+    clearInterval(childHandle);
+  }
 });
 
 test('runTurn caller abort remains ABORTED, including while queued behind another turn', async () => {

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { validateOptions } from '../dist/index.js';
@@ -9,6 +9,19 @@ import { cmdInstall, writeSkill } from '../dist/cli/install.js';
 import { toolSchema } from '../dist/bridge/mcp.js';
 import codexAdapter from '../dist/adapters/codex.js';
 import piAdapter from '../dist/adapters/pi.js';
+
+// Use a controllable fake Codex CLI without depending on a host installation.
+function fakeCodex(bin, source) {
+  const script = path.join(bin, 'fake-codex.js');
+  writeFileSync(script, source);
+  if (process.platform === 'win32') {
+    writeFileSync(path.join(bin, 'codex.cmd'), '@"%~dp0fake-codex.js" %*\r\n');
+  } else {
+    const executable = path.join(bin, 'codex');
+    writeFileSync(executable, `#!/usr/bin/env node\n${source}`);
+    chmodSync(executable, 0o755);
+  }
+}
 
 test('mcpServers timeout validation', () => {
   // Valid positive numbers in seconds or ms
@@ -57,11 +70,10 @@ test('codex adapter preserves mcp timeout in args', async () => {
   const bin = path.join(tmp, 'bin');
   mkdirSync(bin);
   try {
-    writeFileSync(path.join(bin, 'codex.cmd'), '@"%~dp0fake-codex.js" %*\n');
     const capture = path.join(tmp, 'args.json');
-    writeFileSync(path.join(bin, 'fake-codex.js'), `require('node:fs').writeFileSync(process.env.CAPTURE_ARGS, JSON.stringify(process.argv.slice(2))); console.log(JSON.stringify({type:'thread.started',thread_id:'12345678-1234-1234-1234-123456789abc'})); console.log(JSON.stringify({type:'turn.completed',usage:{}}));\n`);
+    fakeCodex(bin, `require('node:fs').writeFileSync(process.env.CAPTURE_ARGS, JSON.stringify(process.argv.slice(2))); console.log(JSON.stringify({type:'thread.started',thread_id:'12345678-1234-1234-1234-123456789abc'})); console.log(JSON.stringify({type:'turn.completed',usage:{}}));\n`);
     const env = { ...process.env, CODEX_HOME: tmp, CAPTURE_ARGS: capture, PATH: `${bin}${path.delimiter}${process.env.PATH || ''}` };
-    env.Path = env.PATH;
+    if (process.platform === 'win32') env.Path = env.PATH;
     const events = [];
     for await (const event of codexAdapter.run({
       prompt: 'test prompt',
@@ -84,11 +96,10 @@ test('Codex read-only, plan, and edit modes reject sandbox bypass flags and conf
   const bin = path.join(tmp, 'bin');
   mkdirSync(bin);
   try {
-    writeFileSync(path.join(bin, 'codex.cmd'), '@"%~dp0fake-codex.js" %*\n');
     const capture = path.join(tmp, 'args.json');
-    writeFileSync(path.join(bin, 'fake-codex.js'), `require('node:fs').writeFileSync(process.env.CAPTURE_ARGS, JSON.stringify(process.argv.slice(2))); console.log(JSON.stringify({type:'thread.started',thread_id:'12345678-1234-1234-1234-123456789abc'})); console.log(JSON.stringify({type:'turn.completed',usage:{}}));\n`);
+    fakeCodex(bin, `require('node:fs').writeFileSync(process.env.CAPTURE_ARGS, JSON.stringify(process.argv.slice(2))); console.log(JSON.stringify({type:'thread.started',thread_id:'12345678-1234-1234-1234-123456789abc'})); console.log(JSON.stringify({type:'turn.completed',usage:{}}));\n`);
     const env = { ...process.env, CODEX_HOME: tmp, CAPTURE_ARGS: capture, PATH: `${bin}${path.delimiter}${process.env.PATH || ''}` };
-    env.Path = env.PATH;
+    if (process.platform === 'win32') env.Path = env.PATH;
     const blocked = [
       ['--dangerously-bypass-approvals-and-sandbox'],
       ['--yolo'],
