@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.5.0] - 2026-10-13
+
+### Quota-Aware Routing
+- **Measured route thresholds:** Claude, Codex, and Antigravity (`agy`) can be gated by remaining quota, with inclusive thresholds per route and a global default. Unknown or unavailable measurements do not qualify as available quota; unsupported per-route thresholds are rejected before the primary starts.
+- **Provider-specific windows:** AGY 1.1.11 or later reports model-family pools with native five-hour and weekly windows. Gemini OAuth measurements are conditional on an unexpired file-based OAuth credential and expose model-specific request buckets; their window duration is unknown, and no fixed five-hour reset is assumed. Keychain-only, expired or absent OAuth, API-key, and Vertex AI credentials do not produce a measurement.
+- **Wait for reset:** Quota policies can wait for a reported reset, with a configurable maximum wait. This is an in-process wait, not a durable scheduled job. Quota routing is opt-in; without a quota policy or fallback threshold, fallback remains error-driven and defaults to rate-limit errors. Fallback does not rerun work after tools have run with edit or full permissions.
+
+### Run Control, Safety & Isolation
+- **Long-running MCP work:** `dispatch_*` runs can be collected with bounded `wait_run` calls (up to 30 seconds each), inspected with `check_run` for recent event and tool snippets, and managed with `cancel_run`. A wait timeout only ends that wait call; it does not stop the run. Abort and timeout handling now tracks the cause, cleans up processes, and reports progress and tool activity.
+- **Explicit high-risk modes:** Codex YOLO and Claude's `dangerouslySkipPermissions` require callers to request `permissions: "full"`; they remain subject to the configured permission ceiling.
+- **Execution hardening:** Improved configuration validation, permission enforcement, checkpoints, worktree isolation, execution budgets, session metadata handling, credential separation, proxy image handling, and installer behavior across supported environments.
+- **Cross-platform path handling:** Canonicalized home and project detection to avoid memory mixing across Windows 8.3 path aliases, and hardened sandbox link validation for macOS and Windows parent-path aliases without relaxing escape checks. Updated test fixtures for portable POSIX paths and headless mock timeouts on Node 22.
+
+### Provider & CLI Updates
+- **Provider protocol corrections:** Updated CLI invocation and response handling for Grok, Cursor, Gemini, and Devin, including stream and run-control behavior.
+- **Proxy images:** Image input handling is more robust; supported agents receive validated image data, while unsupported agents receive a placeholder and warning.
+- **Documentation:** Clarified quota measurement limits, fallback behavior, and MCP run controls; removed obsolete internal planning and competitor comparison material.
+
 ## [0.4.3] - 2026-10-10
 
 ### Quota & Credentials
