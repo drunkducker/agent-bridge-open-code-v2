@@ -255,7 +255,7 @@ dispatch_codex({
 
 `--min-remaining-percent` is inclusive and accepts finite percentages from 0 to 100. A fallback can use `agent@N[:model]` to override its threshold, such as `codex@15`; this enables the default 20% primary policy if no primary threshold or wait flag is supplied. Do not attach a percentage threshold to providers without a supported reader. The global threshold does not wait unless `--wait-for-quota` is also set. Quota wait is separate from the agent execution timeout. Library and proxy callers can pass `quotaPolicy: { minRemainingPercent, waitForReset, maxWaitMs }` and fallback `minRemainingPercent`.
 
-Claude's `--permissions full` maps to `bypassPermissions`; `--dangerously-skip-permissions` explicitly adds Claude's literal flag and requires explicit full permissions. It does not raise the configured ceiling.
+Claude's `--permissions full` maps to `bypassPermissions`; `--dangerously-skip-permissions` explicitly adds Claude's literal flag and requires explicit full permissions. It does not raise the configured ceiling. Claude refuses this flag as root/sudo, so AgentBridge rejects it up front with `BAD_OPTION` (run as a non-root user, omit the flag, or set `IS_SANDBOX=1` only inside a real sandbox).
 
 ### 5. Parallel workflows
 `fanout` runs the same prompt on many agents and collects all answers; `race` returns the first accepted answer and cancels the rest. `--worktree` runs an agent in an isolated git worktree; `--max-cost/--max-tokens/--max-time` enforce budgets.

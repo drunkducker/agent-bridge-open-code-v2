@@ -377,6 +377,8 @@ test('prepare rejects malformed dispatch arguments and validates every timeout a
     { code: 'BAD_OPTION' },
   );
   assert.equal(prepare('pi', { prompt: 'ok', timeout: 120000 }, env).opts.timeoutMs, 120000);
+  assert.equal(prepare('pi', { prompt: 'ok', timeoutSeconds: 2400 }, env).opts.timeoutMs, 2400000);
+  assert.equal(prepare('pi', { prompt: 'ok', timeout: 2400 }, env).opts.timeoutMs, 2400);
   assert.throws(() => prepare('pi', { prompt: 'ok', subdelegation: null }, env), { code: 'BAD_OPTION' });
 });
 

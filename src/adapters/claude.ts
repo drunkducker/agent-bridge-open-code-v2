@@ -73,6 +73,12 @@ const userMessageLine = (o: any) =>
     },
   }) + '\n';
 
+/** Claude CLI rejects --dangerously-skip-permissions as root unless IS_SANDBOX=1. */
+function runningAsRoot(env?: Record<string, string | undefined>): boolean {
+  if (typeof process.getuid !== 'function' || process.getuid() !== 0) return false;
+  return (env?.IS_SANDBOX ?? process.env.IS_SANDBOX) !== '1';
+}
+
 function buildArgs(o: any, mcpFile?: string, resumeId?: string): string[] {
   const a = ['-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages'];
   if (o.images?.length) a.push('--input-format', 'stream-json');
@@ -161,6 +167,13 @@ const adapter: AgentAdapter = {
     const o = { ...validateOptions(rest), isolated, effort };
     if (o.dangerouslySkipPermissions && o.permissions !== 'full')
       throw bad('dangerouslySkipPermissions requires full permissions');
+    if (
+      (o.dangerouslySkipPermissions || o.extraArgs?.includes?.('--dangerously-skip-permissions')) &&
+      runningAsRoot(o.env)
+    )
+      throw bad(
+        'Claude refuses --dangerously-skip-permissions when running as root/sudo. Run AgentBridge as a non-root user, drop dangerouslySkipPermissions (permissions:"full" already maps to bypassPermissions), or set IS_SANDBOX=1 only inside a real sandbox.'
+      );
     const sess = o.session;
     if (sess?.id != null && !UUID.test(sess.id)) throw bad('session.id must be a UUID');
     let resumeId: string | undefined;

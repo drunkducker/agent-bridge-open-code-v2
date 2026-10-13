@@ -96,3 +96,29 @@ test('Grok plan permissions use the native plan mode', async (t) => {
   assert.notEqual(at, -1);
   assert.equal(args[at + 1], 'plan');
 });
+
+test('Claude rejects --dangerously-skip-permissions up front when running as root', async (t) => {
+  const adapter = await agents.get('claude');
+  const realGetuid = process.getuid;
+  const realSandbox = process.env.IS_SANDBOX;
+  process.getuid = () => 0;
+  delete process.env.IS_SANDBOX;
+  t.after(() => {
+    if (realGetuid) process.getuid = realGetuid;
+    else delete process.getuid;
+    if (realSandbox === undefined) delete process.env.IS_SANDBOX;
+    else process.env.IS_SANDBOX = realSandbox;
+  });
+  const drain = async (opts) => {
+    const it = adapter.run(opts);
+    for (;;) if ((await it.next()).done) return;
+  };
+  await assert.rejects(
+    drain({ prompt: 'x', permissions: 'full', dangerouslySkipPermissions: true }),
+    /root\/sudo/
+  );
+  await assert.rejects(
+    drain({ prompt: 'x', permissions: 'full', extraArgs: ['--dangerously-skip-permissions'] }),
+    /root\/sudo/
+  );
+});

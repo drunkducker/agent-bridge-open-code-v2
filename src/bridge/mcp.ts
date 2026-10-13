@@ -168,9 +168,9 @@ function askSchema(agent: string) {
         timeout: {
           type: 'number',
           exclusiveMinimum: 0,
-          description: 'Timeout in seconds (or ms if >= 1000). Alias for timeoutSeconds.',
+          description: 'Legacy alias for timeoutSeconds. Seconds, but values >= 1000 are read as milliseconds (2400 = 2.4s, not 40 min). Prefer timeoutSeconds.',
         },
-        timeoutSeconds: { type: 'number', exclusiveMinimum: 0, description: 'Default 300' },
+        timeoutSeconds: { type: 'number', exclusiveMinimum: 0, description: 'Run lifetime in SECONDS, always (default 300). 2400 = 40 min.' },
         session: {
           type: 'object',
           properties: {
@@ -487,7 +487,8 @@ export function prepare(agent: string, args: any, env: NodeJS.ProcessEnv = proce
     }
   }
   const rawTimeout = hasTimeoutSeconds ? args.timeoutSeconds : hasTimeoutAlias ? args.timeout : undefined;
-  if (rawTimeout !== undefined) ts = rawTimeout >= 1000 ? rawTimeout / 1000 : rawTimeout;
+  // timeoutSeconds is always seconds; only the legacy `timeout` alias guesses ms for values >= 1000.
+  if (rawTimeout !== undefined) ts = hasTimeoutSeconds || rawTimeout < 1000 ? rawTimeout : rawTimeout / 1000;
   opts.timeoutMs = Math.round(ts * 1000);
   const childDepth = depth + 1;
   const models = Object.fromEntries(agentList(env).filter((a) => env[mk(a)]).map((a) => [mk(a), env[mk(a)]]));
