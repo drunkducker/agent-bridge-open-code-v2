@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.5.2] - 2026-10-13
+
+### Documentation & Agent Skill
+- Clarified that `edit` permission allows file changes but does not provide shell access. Delegated tasks that must run commands such as builds, tests, or other CLIs require `full` permission, subject to the configured permission ceiling.
+- Updated the README and `agentbridge-delegate` skill with the same permission guidance.
+
 ## [0.5.1] - 2026-10-13
 
 ### Safety & MCP Run Controls
