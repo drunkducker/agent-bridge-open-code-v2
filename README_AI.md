@@ -7,7 +7,7 @@
 ## 1. Core Philosophy: "O Agent Pode Tudo" (Full Freedom by Default)
 
 AgentBridge is built on the philosophy that autonomous coding agents should not be artificially handcuffed:
-- **`permissions` defaults to `read-only`:** The safety lock is engaged on every run unless you (or the operator) elevate it (`src/core/config.ts`). You can read files and search the web, but you cannot edit files or run shell commands until the task is granted more.
+- **`permissions` defaults to `read-only`:** AgentBridge requests the provider's read-only controls where available. Enforcement differs by harness; for some generic CLI adapters, read-only/plan restrictions are prompt guidance or native defaults, not a guaranteed OS-level filesystem or process sandbox. Check the harness validation notes before relying on a boundary.
 - **Elevate deliberately, not arbitrarily:** Request `permissions: "edit"` or `"full"` explicitly when a task needs it, or configure a persistent default via `AGENTBRIDGE_DEFAULT_PERMS` (the installer's `--default-permissions`). The ceiling (`AGENTBRIDGE_PERMS` / `AGENTBRIDGE_PERMS_CEILING`, default `full`) is the hard circuit-breaker no request can exceed.
 - **Fail-safe isolation available on demand:** When safety is needed for risky refactors, AgentBridge provides **Git Checkpoints** (`ab checkpoint`) and **Git Worktrees** (`--worktree`) so you can experiment freely with instant rollback.
 
@@ -50,6 +50,10 @@ AgentBridge is a unified hub and orchestration bridge that connects every coding
 | `ab doctor --live` | Probes CLIs and performs a real live test ping on each | Verify that tokens and accounts are currently working |
 | `ab ask <agent> "<prompt>"` | Executes a synchronous run on `<agent>` and prints the output | Quick second opinion or targeted subtask |
 | `ab run <agent> "<prompt>" --stream` | Runs `<agent>` streaming live tokens and tool events | Interactive or detailed executions |
+| `ab run <agent> "<prompt>" --min-remaining-percent 20 --fallback codex,pi` | Routes through the ordered chain using measured quota | Avoid starting on a provider below the threshold |
+| `ab run claude "<prompt>" --min-remaining-percent 30 --fallback 'codex@15,ollama:qwen2.5-coder:14b'` | Gives Codex its own 15% threshold; leaves Ollama unmetered | Route-specific quota rules |
+| `ab run codex "<prompt>" --permissions full --yolo` | Requests Codex's native bypass mode | Explicit full permissions; permission ceiling still applies |
+| `ab run claude "<prompt>" --permissions full --dangerously-skip-permissions` | Explicitly adds Claude's literal bypass flag | Only when that extra bypass is intended |
 | `ab race "<prompt>" <agent1> <agent2>` | First agent with an accepted answer wins, cancels others | Hedging fast models against complex prompts |
 | `ab fanout "<prompt>" <agent1> <agent2>` | Runs prompt across multiple agents and collects all answers | Code reviews, contrasting architecture plans |
 | `ab fix <agent> "<test-cmd>"` | Autonomous TDD auto-repair loop with rollback on failure | Self-healing broken code or tests automatically |
@@ -72,14 +76,14 @@ AgentBridge is a unified hub and orchestration bridge that connects every coding
 When the user or another agent asks you to delegate work, use the `agentbridge` MCP tools:
 
 ### Available Tools:
-- **`ask_<agent>(prompt, model?, effort?, permissions?, cwd?, timeoutSeconds?, transport?, mcpPassthrough?, skills?)`**:
-  Synchronous tool call. Blocks until the target agent finishes, returning the text, usage, and session ID.
+- **`ask_<agent>(prompt, model?, effort?, permissions?, cwd?, timeoutSeconds?, transport?, mcpPassthrough?, skills?, subdelegation?)`**:
+  Synchronous call for short bounded tasks. `subdelegation` defaults to `true`; set it to `false` to prevent the child from spawning further AgentBridge runs.
   Available agents: `ask_claude`, `ask_codex`, `ask_opencode`, `ask_agy`, `ask_pi`, `ask_ollama` (and any custom endpoints).
   - Use `transport: "app-server"` for Codex to run a persistent warm JSON-RPC daemon (zero cold start, real-time approval handling).
-- **`dispatch_<agent>(prompt, ...)`**:
-  Asynchronous dispatch. Returns a `runId` immediately.
+- **`dispatch_<agent>(prompt, ..., subdelegation?)`**:
+  Asynchronous dispatch. Returns a `runId` immediately. `subdelegation` defaults to `true`; set it to `false` to prevent the child from spawning further AgentBridge runs.
 - **`wait_run(id, timeoutSeconds?)`**:
-  Waits for an async run to finish.
+  Waits up to 30 seconds per call (larger requested waits are capped); a wait timeout leaves the run active. Continue polling until its structured state is terminal.
 - **`check_run(id)`**:
   Polls progress, status, tokens, and recent events of an async run.
 - **`cancel_run(id)`**:
@@ -94,6 +98,59 @@ When the user or another agent asks you to delegate work, use the `agentbridge` 
 4. **Parallel execution with `dispatch`:** If you need 3 independent tasks done (e.g. tests for module A, B, and C), call `dispatch_*` 3 times and then `wait_run` on each.
 5. **Verify results:** Never blindly accept code claims from a subagent. Inspect the modified files and run test suites before presenting the task as complete to the user.
 
+### MCP result handling and long tasks
+
+MCP tools return result objects, typically `{ content: [{ type: "text", text: "..." }], structuredContent?, isError? }`, not guaranteed strings. Some clients omit `structuredContent`, so parse JSON from `textOf(result)` as a fallback for state, run ids, and errors. Treat `isError: true` as failure. Filter the bridge attestation line beginning `[agentbridge] ` from answer text.
+
+For work likely to take more than 30 seconds, call `dispatch_*`, then `wait_run(id, timeoutSeconds: 30)` repeatedly until state is `done`, `error`, `cancelled`, or `lost`. If a call errors or returns no useful run id/state, report that failure. `check_run` exposes bounded recent event snippets and `lastTool` for progress context.
+
+```js
+const dispatched = await dispatch_codex({ prompt, timeoutSeconds: 600 });
+function textOf(r) {
+  if (typeof r === "string") return r;
+  return (r?.content ?? [])
+    .filter(x => x.type === "text" && !x.text.startsWith("[agentbridge] "))
+    .map(x => x.text)
+    .join("\n");
+}
+function dataOf(r) {
+  if (r?.structuredContent) return r.structuredContent;
+  try { return JSON.parse(textOf(r)); } catch { return undefined; }
+}
+function assertOk(r) {
+  if (r?.isError) {
+    const d = dataOf(r);
+    throw new Error(d?.error?.message ?? textOf(r) ?? "MCP call failed");
+  }
+}
+assertOk(dispatched);
+const runId = dataOf(dispatched)?.runId;
+if (!runId) throw new Error("dispatch returned no run id");
+const terminalStates = new Set(["done", "error", "cancelled", "lost"]);
+let result;
+let state;
+do {
+  result = await wait_run({ id: runId, timeoutSeconds: 30 });
+  assertOk(result);
+  state = dataOf(result)?.state;
+  if (!state) throw new Error(`wait_run returned no useful state: ${textOf(result)}`);
+} while (!terminalStates.has(state));
+if (state !== "done") {
+  const error = dataOf(result)?.error;
+  throw new Error(error?.message ?? `AgentBridge run ended: ${state}`);
+}
+```
+
+Use `textOf(result)` to read text while excluding the attestation line; keep structured fields for run state and diagnostics.
+
+`dispatch_*` has no unsolicited completion push: the caller orchestrates follow-up polling. `send_message`/`check_messages` provide an inbox and do not inject text into a live prompt. Session continuation starts a later turn in the same agent session; it does not steer an already-running turn.
+
+Keep the CLI or MCP server process alive while a run is quota-waiting. Persisted run status supports observation; it is not a durable scheduler and a waiting run does not resume after its bridge process restarts.
+
+The ask/dispatch task timeout controls the delegated run lifetime (for example, `timeoutSeconds: 600`; values at least 1000 are interpreted as milliseconds). The MCP client's transport deadline is client- and configuration-specific; installers commonly configure 300 seconds, but 60 and 300 seconds are not universal caps. A synchronous call cannot exceed a fixed client deadline, and server streaming/progress cannot guarantee extending it. The run continues independently after a wait call times out, so continue polling. Structured errors expose the observed code, message, and cause; synchronous request cancellation retains code `ABORTED` with detail cause `REQUEST_CANCELLED`, while a waiter may report `REQUEST_CANCELLED`. A disconnected client may not receive a later server-side transport error.
+
+For usage events, `incremental: true` marks a delta to add; an absent or false `incremental` marks a snapshot to replace. `Result.usage` aggregates the final attempt, so do not add it again to that attempt's events. Budget accounting still includes earlier fallback attempts. Codex child MCP server deadlines use its native `tool_timeout_sec` config field; temporary HTTP bridges injected for Codex use 300 seconds.
+
 ---
 
 ## 5. The Safety Lock & Permission Ceilings
@@ -101,16 +158,18 @@ When the user or another agent asks you to delegate work, use the `agentbridge` 
 ### Why Safe-by-Default Matters
 Most autonomous agent frameworks run in unrestricted or "yolo" mode by default. This creates catastrophic risk: a routine prompt asking "Audit auth.ts" or an unmonitored subagent hallucination can overwrite working code or run destructive shell scripts.
 
-AgentBridge implements an active **Zero-Accident Safety Lock**:
-1. **Engaged by Default (`read-only`):** All delegations and CLI calls run with the safety lock engaged. Write tools and shell execution are physically omitted or sandboxed.
+AgentBridge defaults requested permissions to `read-only`, but the strength of that request depends on the harness:
+1. **Requested by Default (`read-only`):** AgentBridge omits tools or configures native restrictions where supported. Other CLI adapters may only receive prompt guidance or rely on provider defaults; this is not a universal filesystem/process sandbox.
 2. **Intentional Unlocking:** When a subagent needs to modify files or execute build/test commands, you must explicitly pass `permissions: "edit"` or `permissions: "full"`.
 3. **Inviolable Ceiling Circuit-Breaker:** The ceiling defaults to `full`, but if configured to `edit` or `read-only`, no subagent can ever break out of or elevate past that ceiling.
 
+See [Harness validation](docs/HARNESS_VALIDATION.md) for each CLI's verified permission control and what was checked locally. The `--yolo` option is Codex-only; permission names do not imply identical OS-level isolation across harnesses.
+
 | Permission Level | Rank | Capabilities | Default Role |
 |---|---|---|---|
-| `read-only` | 0 | Can read files and search web. **Cannot edit files. Cannot run shell.** | **Safety Lock Engaged (Default)** |
-| `plan` | 1 | Can read files and plan solutions. **Cannot edit files. Cannot run shell.** | Explicit opt-in |
-| `edit` | 2 | Can read and **edit/write workspace files**. **Cannot run arbitrary shell.** | Intentional Unlock (File Edits) |
+| `read-only` | 0 | Requests read-only access; exact tool and process restrictions depend on provider. | Default requested permission |
+| `plan` | 1 | Requests planning without edits; exact restrictions depend on provider. | Explicit opt-in |
+| `edit` | 2 | Requests file editing without arbitrary shell where supported. | Intentional Unlock (File Edits) |
 | `full` | 3 | **Unrestricted.** Can run bash/PowerShell, edit files, install packages, run tests. | **Default Ceiling** (Full Unlock) |
 
 You can customize the persistent default per project or globally:
@@ -166,62 +225,19 @@ When delegating to subagents via `ask_*` or `dispatch_*`:
 
 ---
 
-## 7. Proactive Quota Routing & The Escalation Ladder ("A Escadinha")
+## 7. Quota measurements and fallback
 
-### How to Check Quota Proactively
-You do not need to wait for an HTTP 429 error or a rate limit exception to occur. When connected via MCP or executing CLI tasks, you can query real-time remaining token quotas:
+Proactive remaining-percentage checks are available for Claude Code, Codex, Antigravity (`agy`), and conditional Gemini OAuth. Provider limits differ; check the [provider quota support matrix](docs/PROVIDER_QUOTA_SUPPORT.md). AGY uses shared model-family pools. Gemini uses model-specific request buckets with unknown window duration and only supports unexpired file-based OAuth credentials. Cursor, Grok, Devin, OpenCode, Pi, Ollama, and custom endpoints have no shared remaining-percent reader. Unknown is not unlimited.
 
-- **Via MCP Tool (`check_quota`):**
-  ```json
-  {
-    "tool": "check_quota",
-    "arguments": {
-      "agent": "codex"
-    }
-  }
-  ```
-  Returns structured quota health:
-  ```json
-  {
-    "agent": "codex",
-    "usedPercent": 82,
-    "remainingPercent": 18,
-    "windowMinutes": 300,
-    "resetAt": "2026-10-09T18:00:00.000Z",
-    "okToProceed": true,
-    "formatted": "[codex] 82% used (300m window, reset: 2026-10-09T18:00:00.000Z) - OK"
-  }
-  ```
+Without a quota policy or a fallback `@N` threshold, AgentBridge uses error-driven fallback. `RATE_LIMITED` is the default trigger; add `TIMEOUT` or `AGENT_FAILED` with `--fallback-on`. A quota threshold gates the route on measured remaining percentage. Unsupported explicit per-route `@N` values are rejected before the primary starts; unthresholded final routes can serve as unmetered fallbacks. Fallback is skipped after tools have run under `edit` or `full` permissions to avoid repeating side effects.
 
-### The Autonomous Routing Pattern
-When coordinating complex workflows or spawning subagents, follow this pattern:
-1. **Query Quota:** Call `check_quota({ agent: "codex" })` (or `claude`).
-2. **Evaluate Remaining Capacity:**
-   - **Above 15% Remaining (`usedPercent < 85`):** You have sufficient headroom. Spawn your primary subagent:
-     `ask_codex({ prompt: "Write unit tests for auth.ts", permissions: "edit" })`
-   - **15% or Less Remaining (`usedPercent >= 85`):** Preserve your expensive quota for critical architectural decisions. Step down the escalation ladder ("escadinha") and delegate the task to a local zero-cost model:
-     `ask_ollama({ prompt: "Write unit tests for auth.ts", model: "qwen2.5-coder:14b", permissions: "edit" })`
-     or `ask_pi({ prompt: "...", permissions: "edit" })`.
+```bash
+ab run claude "Review and implement this change" --model sonnet --min-remaining-percent 30 \
+  --fallback 'agy@15:gemini-3.8-flash-low,codex@20,ollama:qwen2.5-coder:14b'
+```
 
-### The Automatic Escalation Ladder ("A Escadinha")
-AgentBridge automatically executes this cascade if you configure fallback targets:
-- **In CLI:**
-  ```bash
-  ab ask codex "Refactor the module" --fallback claude,pi,ollama:qwen2.5-coder:14b
-  ```
-- **In MCP Tool calls:**
-  ```json
-  {
-    "tool": "ask_codex",
-    "arguments": {
-      "prompt": "Refactor the module",
-      "permissions": "edit",
-      "fallback": ["claude", "pi", "ollama:qwen2.5-coder:14b"]
-    }
-  }
-  ```
+Use `check_quota({ agent: 'agy', model: 'claude-sonnet-5-5' })` when checking a model-aware pool. MCP returns a result envelope; inspect `structuredContent` or its text block. Timeout or missing credentials produces an unknown reading, never zero used. `check_quota.thresholdPercent` is a used-percent health threshold; route policies use remaining percent.
 
----
 
 ## 8. Using Local Endpoints & Models (Ollama, OpenRouter, vLLM)
 

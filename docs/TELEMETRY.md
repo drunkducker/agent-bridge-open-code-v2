@@ -19,6 +19,8 @@ contextOf(r.sessionId);       // {tokens, exact, source, window, windowSource, p
 `{runId, context, level, compaction?, hooks[]}`. Only runs made through the wrapper get tool counts / status; runs from the bridge
 registry (`~/.agentbridge/runs`) are merged into `stats()` with partial tool counts (`toolCallsPartial`).
 
+Provider quota readers and their authentication requirements are documented in [Provider quota support](PROVIDER_QUOTA_SUPPORT.md).
+
 ## Telemetry (honest numbers)
 | agent | context source | exact? |
 |---|---|---|
@@ -57,15 +59,7 @@ The summary: `{event, runId, agent, model, sessionId, status, startedAt, endedAt
 Safety: per-hook timeout (default 10s; commands are killed, http destroyed, callbacks abandoned), hook errors are captured in `telemetry.hooks[]` and never affect the run; the wrapper awaits all hooks (bounded) before returning, so nothing outlives the call.
 `wait(runIdOrSessionId, {timeoutMs, pollMs})` resolves with the summary when the run reaches a terminal state (in-process or from another process via the persisted record); it always resolves within `timeoutMs` (`waitTimedOut:true`), unknown ids give `notFound:true`. `waitAll(ids)`.
 
-## Round 2 changes
-- Session records are updated under an O_EXCL lock (multi-process test: 8 processes, no lost updates).
-- opencode context is read with `opencode export <sid>` (last assistant message tokens, exact); codex model comes from the session file's `turn_context` (the adapter says "default").
-- Native claude compact: the summary alone understates (system prompt is re-added), so `compact()` makes one tiny follow-up call and reports the exact size (`afterMeasuredByFollowUp`; `measure:false` keeps the labelled estimate).
-- `stats().global` no longer has `pct` (summing independent windows is meaningless): use `global.maxPct`/`maxPctSession` (most loaded session) and per-agent `agents.<a>.pct`; `contextTokens` is the total.
-- Window: codex reads `model_context_window` from the file; claude/opencode use the table (override with `setContextWindow`), widened when observed tokens exceed it.
-
-## Known gaps
-Quota tracking used to be a gap; it exists now: `src/quota/proactive.ts` polls Anthropic's OAuth usage API and Codex's usage backend, exposed through `ab quota`, the `check_quota` MCP tool and the `>= 95%` account-pool cooldown in `src/server/pool.ts` (details in [COMPARISON.md](COMPARISON.md)). Coverage is provider-specific — only Anthropic (OAuth login) and Codex (ChatGPT login) have usage endpoints; the other agents are covered by in-flight `RATE_LIMITED` detection only.
+Provider quota readers and their authentication requirements are documented in [Provider quota support](PROVIDER_QUOTA_SUPPORT.md).
 
 ## Known limits
 Tool counts need the wrapper. opencode context has no session-file reader. Codex fork/`exec resume` behavior depends on the installed CLI version.

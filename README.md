@@ -45,13 +45,29 @@ Instead of managing 5 different CLIs and hitting brick walls, AgentBridge makes 
 | **Fragmented CLIs & APIs** | **One universal CLI (`ab`) & TypeScript API:** Call any agent with identical options, stream events, and structured results. |
 | **Isolated Agents in Silos** | **Universal MCP Bridge:** Any agent can call any other agent as a subagent (`ask_claude`, `ask_codex`, `ask_opencode`, `ask_agy`, `ask_pi`, `ask_ollama`...) with granular permissions, timeouts, and session controls. |
 | **Hitting 429 Token Walls** | **The Escalation Ladder ("A Escadinha"):** Seamless fallback chains (`--fallback codex,pi,ollama`). When one agent runs out of quota, the next steps in automatically. |
-| **Wasting Expensive Tokens** | **Proactive Quota Routing:** Agents actively query token limits via `check_quota` or `ab quota` to intelligently delegate to cheaper or local models. |
+| **Wasting Expensive Tokens** | **Quota-Aware Routing:** Gate an ordered agent chain on measured remaining quota, wait for a reset, or set a maximum quota wait. |
 | **Hedge & Compare Models** | **`fanout` & `race`:** Send tasks to multiple models in parallel; compare solutions or take the fastest answer. |
 | **Locked Out of SDKs** | **Universal OpenAI/Anthropic Proxy (`ab serve`):** Drive any tool, IDE, or script through your existing agent subscriptions. |
 | **Accidental Code Destruction** | **Zero-Accident Safety Lock:** Safe `read-only` by default, with deliberate unlocking (`--permissions edit`). |
 | **No Easy Undo on Broken Edits** | **Git Hidden-Ref Checkpoints:** Instant repository snapshots with zero branch pollution for atomic rollbacks (`ab checkpoint rollback`). |
 | **Dependency Hell & Bloat** | **Zero Runtime Dependencies:** Pure Node.js & TypeScript. No bloat, instantaneous startup. |
 
+### Quota-aware routing
+
+Measured percentage routing is available for Claude, Codex, Antigravity (`agy`), and conditionally Gemini OAuth. Provider limits differ: AGY reports model-family pools with five-hour and weekly windows; Gemini reports model-specific request buckets without a known window duration. Unknown or unsupported measurements never count as available quota. See the [provider support matrix](docs/PROVIDER_QUOTA_SUPPORT.md).
+
+```bash
+ab run claude "Review and implement this change" --model sonnet --permissions edit --min-remaining-percent 30 \
+  --fallback 'agy@15:gemini-3.8-flash-low,codex@20,ollama:qwen2.5-coder:14b'
+```
+
+The primary needs 30% remaining, AGY 15%, and Codex 20%; Ollama is an explicit ungated final route. Without a quota flag or fallback `@N` threshold, AgentBridge does not check quota and falls back on errors only (default `RATE_LIMITED`; customize with `--fallback-on`). Unknown supported-provider measurements skip that route. An explicit unsupported per-route `@N` threshold is rejected before the primary starts. A final provider without a quota reader may be used as an unmetered fallback without `@N`; a metered route without an override inherits the global threshold.
+
+For model-specific status, pass the model to `check_quota`, for example `check_quota({ agent: 'agy', model: 'claude-sonnet-5-5' })`. MCP results are envelopes; read `structuredContent` or the returned text block. Quota reads inspect account metadata only and do not generate an agent response. Fallback does not rerun a task after tools have run under `edit` or `full` permissions.
+
+For explicit Codex bypass mode, `ab run codex "..." --permissions full --yolo` adds Codex's native `--yolo` flag. This is Codex-only, requires explicit full permissions, and remains subject to the operator permission ceiling.
+
+Harness permission behavior differs by provider. AgentBridge maps permission levels to each CLI's available controls; generic CLI adapters may rely on prompt guidance or provider defaults, so those modes are not a universal operating-system sandbox. See [Harness validation](docs/HARNESS_VALIDATION.md) for provider-specific controls and limitations.
 ---
 
 ## Quickstart (2 minutes)
@@ -149,23 +165,15 @@ Now, from inside any of them, you can say "ask claude to review this" or "have p
 > 🛡️ **The Safety Lock:**
 > - **Zero-Accident Default (`read-only`):** When you run `ab ask` or when an agent calls `ask_*`, the safety lock is active by default. The agent can inspect code and answer questions, but **cannot modify files or run destructive shell scripts**.
 > - **Intentional Unlocking:** When you want the agent to write code, implement features, or run tests, simply unlock it with `--permissions edit` (or `--permissions full`).
-> ⏱️ **MCP Timeouts (Zero 60s Cutoffs):**
-> - **Protocol / Server-Level Timeout (300s Default):** The official MCP client SDK enforces a strict 60s network cutoff if a server omits `timeout`. AgentBridge installers (`ab install`, `ab setup`, `install-ide`) automatically write `"timeout": 300` into all client configs (Pi, Claude, Codex, OpenCode, Cursor, VS Code, Zed), ensuring long subagent analyses finish uninterrupted.
-> - **Tool / Function Parameter (`timeout` / `timeoutSeconds`):** You or your subagent can pass `timeout: 600` inside `ask_*` / `dispatch_*` calls to grant child processes extra time for heavy batch tasks.
-> - **Child MCP Servers:** `McpServerConfig.timeout` is fully preserved and forwarded across all adapters.
+> **MCP deadlines:** Client deadlines vary by client and configuration. `ask_*`/`dispatch_*` task timeouts govern run lifetime; dispatched runs can be collected later with bounded `wait_run` calls.
 >
-> 🌐 **Universal Skills (`.agents/skills`) & Conflict Prevention:**
-> - Pi, Codex, OpenCode, and Antigravity all share the open **`.agents/skills/`** directory. Installing once covers all of them!
-> - Within a single install run each skill destination is written at most once (per-process dedup in `writeSkill`, `src/cli/install.ts`), so `ab install all` produces exactly one copy per target.
-> - A project-scope copy that would be byte-identical to the global `~/.agents/skills/agentbridge-delegate` skill is skipped as a duplicate (a message tells you so); `--force` writes it anyway.
-
 ---
 
 ## Everything it can do
 
 ### 1. Unified run API (library + CLI)
 - `run()` (streaming async generator), `ask()` (final result), `fanout()`, `race()`.
-- Identical options for every agent: `model`, `effort` (`low|medium|high|xhigh|max`, mapped per agent), `permissions` (`read-only|plan|edit|full`), `cwd`, `timeoutMs`, `signal`, `systemPrompt`, `jsonSchema`, `session`, `mcpServers`, `env`, `extraArgs`, `fallback`.
+- Identical options for every agent: `model`, `effort` (`low|medium|high|xhigh|max`, mapped per agent), `permissions` (`read-only|plan|edit|full`), `cwd`, `timeoutMs`, `signal`, `systemPrompt`, `jsonSchema`, `session`, `mcpServers`, `env`, `extraArgs`, `fallback`, optional `quotaPolicy`, Codex-only `yolo` (requires explicit `permissions: "full"`), and Claude-only `dangerouslySkipPermissions` (requires explicit `permissions: "full"`).
 - Normalized events (`text`, `tool`, `usage`, `fallback`, ...) and a normalized result (`text`, `sessionId`, `usage`, `model`, `structured`, `fallback`).
 - Typed errors: `NOT_INSTALLED`, `NOT_LOGGED_IN`, `TIMEOUT`, `ABORTED`, `BAD_OPTION`, `RATE_LIMITED`, `AGENT_FAILED`.
 - Structured output: `jsonSchema` validates (and repairs, with a retry) the model's JSON.
@@ -174,16 +182,18 @@ Now, from inside any of them, you can say "ask claude to review this" or "have p
 `new`, `ephemeral`, `continue` (by id or "latest for this cwd") and `fork` (where the agent supports it) — the same vocabulary for all agents.
 
 ### 3. Agents calling agents (MCP bridge)
-- `ab bridge` is a stdio MCP server exposing `ask_<agent>`, `dispatch_<agent>` (async job), `wait_run`, `check_run`, `cancel_run`, `send_message`, and `checkpoint_create`/`checkpoint_rollback`/`checkpoint_list`/`checkpoint_diff` tools.
+- `ab bridge` exposes `ask_<agent>` and `dispatch_<agent>`, plus `wait_run`, `check_run`, `cancel_run`, `list_runs`, `retain_run`, `release_run`, `send_message`, `check_messages`, and checkpoint tools. Dispatch returns a run id; callers poll for completion. There is no unsolicited completion push. `send_message`/`check_messages` are a mailbox, not live prompt injection.
+- MCP calls return `{ content: [...], structuredContent?, isError? }` result objects, not guaranteed strings. Filter the `[agentbridge] ` attestation line from answer text. Use structured data (or parse normalized text as a fallback) for run IDs, state, and errors. `wait_run` is capped at 30 seconds per call; poll until `done`, `error`, `lost`, or `cancelled`.
 - **Subagent Roster & Lineage:** Tracks the full parent-child tree (`RunRecord.root`, per-subagent `parentId`/`parentToolId`/`tokens` in `subagents[]`, delegation depth via `AGENTBRIDGE_DEPTH`), aggregates tokens, and visualizes call trees in `ab ui`.
 - **Caller × callee pairs are tested live:** every cross-direction among claude, codex, opencode and agy (including `agy → agy`), plus `claude ↔ pi` (`acceptance/pairs.test.mjs`, `agy.test.mjs`, `pi.test.mjs`).
 - **Safety rules:** recursion depth guard, permission ceiling (a subagent can never exceed the caller), HMAC attestation of results, the attestation key is delivered only through the process environment (never on disk or argv).
 - **Recursion guard:** `AGENTBRIDGE_MAX_DEPTH` caps delegation depth (default 2); at the cap the bridge refuses to spawn another agent with "Recursion guard: AGENTBRIDGE_DEPTH=N has reached max M" (`src/bridge/mcp.ts`).
 - Forced child working directory (`AGENTBRIDGE_CHILD_CWD`) so a caller cannot redirect where a subagent works.
+- `ask_*`/`dispatch_*` task timeouts control the run lifetime; MCP transport deadlines are client-specific. A wait timeout does not stop a dispatched run. `check_run` provides bounded recent event snippets and the latest tool call.
 
-### 4. The Escalation Ladder ("A Escadinha") & Proactive Quota Intelligence
+### 4. Fallback and quota-aware routing
 
-Never let rate limits or exhausted token quotas kill your momentum again. AgentBridge gives you a two-stage defense: **automatic cascading fallback ladders** and **autonomous proactive quota routing**.
+AgentBridge supports error-driven fallback by default and optional quota-aware route selection when a measured percentage is available.
 
 #### 🪜 The Escalation Ladder ("A Escadinha")
 Set up an intelligent multi-tiered cascade across different providers and compute tiers:
@@ -200,7 +210,7 @@ Set up an intelligent multi-tiered cascade across different providers and comput
                                │ (Approaching limit / 429)
                                ▼
 ┌─────────────────────────────────────────────────────────────┐
-│  Tier 3: Zero-Cost Unlimited Local (Ollama / vLLM)          │  100% offline, private & free
+?  Tier 3: Local / hosted endpoints (Ollama / vLLM)          ?  Provider and machine limits vary
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -209,29 +219,31 @@ Run it seamlessly from the CLI, API, or MCP tools:
 # If Codex is rate-limited, Claude takes over; if Claude is limited, Pi or local Ollama finishes the job!
 ab ask codex "Refactor the authentication flow" --fallback claude,pi,ollama:qwen2.5-coder:14b
 ```
-HTTP 429/529, "usage limit", "quota exceeded", "credit balance too low", "overloaded"... become `RATE_LIMITED` (with `retryAfterMs`). The chain moves down the ladder to the next agent, reports `fallback: { used, attempts, contextLost }`, and safely **refuses to re-run** a task that already made edits under `edit`/`full` permissions.
+HTTP 429/529 and provider quota errors become `RATE_LIMITED` (with `retryAfterMs`). Error fallback defaults to this code and can include more codes with `--fallback-on`. The chain reports `fallback: { used, attempts, contextLost }` and skips reruns after tools have run under `edit`/`full` permissions.
 
-#### 🧠 Autonomous Proactive Quota Delegation (Agent-to-Agent)
-Why wait for a 429 error to crash your run? Agents can query their real-time quota window using the **`check_quota`** MCP tool (or `ab quota <agent>` CLI):
+#### Quota-aware ordered routing
+Quota routing is opt-in. With no quota policy or fallback `@N`, the chain only reacts to errors. When quota routing is requested, supported readers gate routes on measured remaining percentage. Unknown values do not satisfy a threshold; see the [provider support matrix](docs/PROVIDER_QUOTA_SUPPORT.md).
 
-```json
-// Tool Call: check_quota({ agent: "codex" })
-{
-  "agent": "codex",
-  "usedPercent": 82,
-  "remainingPercent": 18,
-  "windowMinutes": 300,
-  "resetAt": "2026-10-09T18:00:00.000Z",
-  "okToProceed": true
-}
+```bash
+# Gate Codex at 20% remaining; proceed to Claude or Pi when below the threshold.
+ab run codex "Implement the migration" --min-remaining-percent 20 --fallback claude,pi
+
+# Wait for a measured reset for up to 45 minutes.
+ab run claude "Review the release" --wait-for-quota --max-quota-wait 2700
 ```
 
-**Real-world Prompt Pattern (Codex / Claude Subagent Quota Routing):**
-> *"You are the Lead Engineer. Before implementing the test suite, check your remaining quota using `check_quota({ agent: 'codex' })`. If your remaining quota is above 15% (`usedPercent < 85`), spawn an `ask_codex` subagent with `permissions: 'edit'` to write the tests. If you have 15% or less quota remaining, gracefully step down the escalation ladder and delegate the task to local zero-cost Ollama via `ask_ollama(model: 'qwen2.5-coder:14b')` or `ask_pi`."*
+The MCP tools accept the same policy on an asynchronous route:
+```js
+dispatch_codex({
+  prompt: "Implement the migration",
+  fallback: ["claude", "pi"],
+  quotaPolicy: { minRemainingPercent: 20, waitForReset: true, maxWaitMs: 2_700_000 },
+});
+```
 
-This turns your AI agents into **frugal, self-aware resource managers** that preserve your expensive flagship tokens for high-leverage tasks while offloading boilerplate to local models!
+`--min-remaining-percent` is inclusive and accepts finite percentages from 0 to 100. A fallback can use `agent@N[:model]` to override its threshold, such as `codex@15`; this enables the default 20% primary policy if no primary threshold or wait flag is supplied. Do not attach a percentage threshold to providers without a supported reader. The global threshold does not wait unless `--wait-for-quota` is also set. Quota wait is separate from the agent execution timeout. Library and proxy callers can pass `quotaPolicy: { minRemainingPercent, waitForReset, maxWaitMs }` and fallback `minRemainingPercent`.
 
-- **Proactive Quota Probing & Pool Cooldown:** Automatically queries Anthropic OAuth usage APIs and Codex headers, rotating accounts or triggering cooldowns for credentials with $\ge 95\%$ quota usage.
+Claude's `--permissions full` maps to `bypassPermissions`; `--dangerously-skip-permissions` explicitly adds Claude's literal flag and requires explicit full permissions. It does not raise the configured ceiling.
 
 ### 5. Parallel workflows
 `fanout` runs the same prompt on many agents and collects all answers; `race` returns the first accepted answer and cancels the rest. `--worktree` runs an agent in an isolated git worktree; `--max-cost/--max-tokens/--max-time` enforce budgets.
@@ -311,7 +323,7 @@ ab account add claude personal --login
 ab account use claude work
 ab account quota claude
 ```
-Complete account profile isolation inspired by Orca. Each account gets its own dedicated configuration directory (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `PI_CODING_AGENT_DIR`), eliminating session collisions and leaked tokens. Seamlessly converts to a zero-friction pool for automatic round-robin rotation in `ab serve --accept-tos-risk`.
+Complete account profile isolation. Each account gets its own dedicated configuration directory (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `PI_CODING_AGENT_DIR`), eliminating session collisions and leaked tokens. Seamlessly converts to a zero-friction pool for automatic round-robin rotation in `ab serve --accept-tos-risk`.
 
 ### 15. TDD auto-repair loop (`ab fix`)
 ```bash
@@ -366,7 +378,7 @@ Installs the AgentBridge MCP server directly into your favorite editor or CLI wi
 | HTTP endpoints (Ollama, OpenRouter) | Direct API or harness (`claude`/`pi`) | emulated | Plain chat (no tools) by default; full tools with harness | Pass `--harness claude` or `--harness pi` to enable tools & web |
 | Proxy (`ab serve`) | Client function calling | per request / session | Client functions supported; hosted server tools not available | Register a client-side search function tool |
 
-> **Web Search, Tools & Offline Mode:** By default, AgentBridge applies strict sandboxing to protect your machine. For live internet research, web searches, or executing network commands, models require permission clearance or an execution harness. Conversely, to strictly isolate agents from the web (air-gapped / offline privacy mode), pass `--offline` in the CLI or `offline: true` in code/MCP. See **[docs/REFERENCE.md#web-search-tools-and-network-permissions-across-agents--modes](docs/REFERENCE.md#web-search-tools-and-network-permissions-across-agents--modes)** for the complete guide.
+> **Web Search, Tools & Permission Modes:** AgentBridge requests the selected permission level through each harness's available controls. Native sandboxing and tool exclusion vary by provider; generic adapters may rely on provider defaults or prompt guidance, so `read-only` is not a universal OS-level sandbox. For offline mode, pass `--offline` in the CLI or `offline: true` in code/MCP. See the [permission and network guide](docs/REFERENCE.md#web-search-tools-and-network-permissions-across-agents--modes) and [harness validation notes](docs/HARNESS_VALIDATION.md).
 
 Full details, flags and caveats: **[docs/REFERENCE.md](docs/REFERENCE.md)**.
 
@@ -381,7 +393,6 @@ Full details, flags and caveats: **[docs/REFERENCE.md](docs/REFERENCE.md)**.
 | [docs/PROXY.md](docs/PROXY.md) | The OpenAI/Anthropic compatible proxy |
 | [docs/TELEMETRY.md](docs/TELEMETRY.md) | Telemetry, the dashboard, context policy, compaction, handoff |
 | [docs/EXTENDING.md](docs/EXTENDING.md) | Adding a new agent CLI or HTTP provider |
-| [docs/COMPARISON.md](docs/COMPARISON.md) | In-depth technical comparison: AgentBridge vs. Orca vs. T3 Code |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to contribute, run the tests, the review rules |
 | [acceptance/ADAPTER_NOTES.md](acceptance/ADAPTER_NOTES.md) | Verified facts about each CLI (quirks, workarounds) |
 | [SECURITY.md](SECURITY.md) | Threat model and how to report vulnerabilities |

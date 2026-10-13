@@ -58,7 +58,7 @@
 
 ## [0.3.4] - 2026-10-09
 
-### Shared Skills, MCPs and Safer Passthrough (learned from Orca and T3 Code)
+### Shared Skills, MCPs and Safer Passthrough
 
 - **Fix:** `skills` and `mcpPassthrough` were missing from the option allowlist, so `skills: true` failed with `BAD_OPTION`. Both are accepted now.
 - **Passthrough is operator-controlled:** `AGENTBRIDGE_MCP_PASSTHROUGH` is the ceiling and a call's `mcpPassthrough` can only narrow it (previously a caller could ask for `*`). Project `.mcp.json` is read as a source, only stdio servers are passed, always `exposure: "direct"`, and Codex now receives the server `env`.
@@ -118,7 +118,7 @@
 ### Managed Multiple Accounts, Time-Machine Checkpoints, TDD Auto-Repair & Zero-Remote Telemetry
 
 - **Managed Multiple Accounts & Profiles (`ab account`):**
-  - Full directory isolation for accounts inspired by Orca (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `PI_CODING_AGENT_DIR`, etc.).
+  - Full directory isolation for accounts (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `PI_CODING_AGENT_DIR`, etc.).
   - Interactive multi-login commands: `ab account list [agent]`, `ab account add <agent> <name> [--copy-current] [--login]`, `ab account use <agent> <name>`, `ab account remove <agent> <name> [--purge]`.
   - Zero-friction integration with `--account <name>` on CLI runs and automatic conversion to rotating pools for `ab serve --accept-tos-risk`.
   - Proactive per-account quota inspection via `ab account quota [agent]`.

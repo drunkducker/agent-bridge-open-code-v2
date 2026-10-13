@@ -197,7 +197,8 @@ The binary is available as `agentbridge` and `ab`.
 ab run <agent> [prompt|-] [--model][--effort][--permissions][--cwd][--timeout s]
                            [--session new|ephemeral|continue|fork][--session-id id]
                            [--system][--json-schema '<json>'][--stream][--json]
-                           [--fallback a,b:model][--fallback-on RATE_LIMITED,TIMEOUT,...]
+                           [--fallback a[@N][:model],...][--fallback-on RATE_LIMITED,TIMEOUT,...]
+                           [--min-remaining-percent N][--wait-for-quota][--max-quota-wait seconds][--yolo]
                            [--worktree][--max-cost][--max-tokens][--max-time s]
 ab ask <agent> [prompt|-] [same flags]           # prints only the result text
 ab fanout "<prompt>" agent[:model] ...           # run all, collect all
@@ -215,7 +216,8 @@ ab ui [--port 8788] [--open] [--token t]       # live web dashboard & time-machi
 ab context <session> [--agent a]
 ab handoff <session> --to <agent>
 ab watch <run> | ab wait <run> | ab cancel <run>
-ab serve [--port][--host][--token][--allow-non-loopback][--accounts file.json --accept-tos-risk]
+ab serve [--port][--host][--token][--allow-non-loopback][--fallback agent[@N][:model],...]
+         [--min-remaining-percent N][--wait-for-quota][--max-quota-wait seconds][--accounts file.json --accept-tos-risk]
 ab bridge                                        # stdio MCP server
 ab doctor [--live][--json]
 ab setup | ab wizard [--yes]
@@ -227,6 +229,7 @@ Notes:
 
 - `ab install codex|opencode|agy|pi` register the same MCP bridge in those CLIs (Codex: `codex mcp add`, global `~/.codex/config.toml`; Antigravity: `agy mcp add`, global; OpenCode: the `mcp` block of `opencode.json` in the project, or of the global file with `--scope user`; a config that is not plain JSON is refused untouched) and put the skill in `.agents/skills/` (or `~/.agents/skills/` with `--scope user`), the shared folder those CLIs read. `ab install all` does every CLI that is installed. pi: `pi mcp add agentbridge --exposure direct` (global `~/.pi/agent/mcp.json`, so the `ask_*` tools are declared to the model) plus the same `.agents/skills/` folder pi reads; verified that pi connects to the bridge and lists its tools (a model call through pi was not verified: no model is configured in this pi). Verified live: OpenCode and Antigravity saw the skill and called the bridge tools; for Codex only the registration was verified (its usage limit was exhausted during the check).
 - `ab install codex --auto-approve` sets `default_tools_approval_mode = "approve"` on the bridge server in Codex's config. Without it, interactive Codex asks once per tool and `codex exec` fails with "MCP tool call requires approval".
+- Codex MCP server deadlines use its native `tool_timeout_sec` setting in seconds. `ab install codex --timeout N` writes that key; legacy `timeout` entries for AgentBridge are migrated when the installer updates the Codex config. Temporary HTTP bridges injected for Codex use 300 seconds.
 - `ab install claude` registers the MCP server, writes the relay subagents (`--no-agents` to skip) and installs the `agentbridge-delegate` skill under `.claude/skills/` (project/local scope) or `~/.claude/skills/` (user scope); `--no-skill` skips it. The skill teaches Claude when to delegate, which tool to use (`ask_*` vs `dispatch_*`), permissions, fallback and how to treat results. Source: `skills/agentbridge-delegate/SKILL.md`.
 - `<agent>` is a built-in (`claude`, `codex`, `opencode`, `agy`, `pi`, `cursor`, `grok`, `gemini`, `devin`, `acp`), `ollama` or any [endpoint](#http-endpoints-ollama-and-any-base-url) you configured. Targets for `fanout`/`race` can include a model: `claude:haiku`, `opencode:provider/model`.
 - Pass `-` as the prompt to read it from stdin.
@@ -278,48 +281,52 @@ Unknown options raise `BAD_OPTION`. Anything an agent cannot do raises `BAD_OPTI
 
 ### Permissions & Sandboxing Architecture: How Edits are Blocked vs Allowed
 
-AgentBridge enforces permissions deterministically at the OS and CLI runtime levels. By default, agents run with `permissions: 'full'` (unrestricted execution: shell, terminal, web, file editing). When sandboxing is requested (`edit`, `plan`, or `read-only`), AgentBridge restricts the agent's capabilities:
+AgentBridge applies the requested permission level through each adapter's available controls. The default requested permission is `read-only`. Enforcement varies by harness: some use native sandboxes or tool exclusion, while generic adapters may rely on prompt guidance or provider defaults. These labels do not create a universal OS-level sandbox.
 
 | Permission | Read Files | Web Search | Edit/Write Files | Run Bash/Commands | Enforced By |
 |---|---|---|---|---|---|
-| `full` *(default)* | Yes | Yes | **YES** | **YES** | Unrestricted tools; permission bypass |
-| `edit` | Yes | Yes | **YES** | **NO** | Write/Edit tools enabled; cwd workspace-write sandbox |
-| `plan` | Yes | Yes | **NO** | **NO** | Read-only sandbox + plan prompt mode; writes blocked |
-| `read-only` | Yes | Yes | **NO** | **NO** | Tool schema stripping, OS read-only sandboxes, deny rules |
+| `full` | Yes | Provider-specific | **YES** | **YES** | Native full-access control where available |
+| `edit` | Yes | Provider-specific | **YES** | Provider-specific | Native tool/sandbox controls where available |
+| `plan` | Yes | Provider-specific | Requested off | Provider-specific | Native plan mode, tool filtering, or prompt guidance |
+| `read-only` *(default)* | Yes | Provider-specific | Requested off | Provider-specific | Native sandbox, tool filtering, deny rules, or prompt guidance |
+
+The table describes the normalized request, not a uniform capability guarantee. In particular, `read-only`/`plan` on Grok, Gemini CLI, and Devin do not provide an AgentBridge-enforced filesystem/process sandbox. Provider hooks, MCP configuration, and subprocesses are not covered by a blanket isolation guarantee. See [Harness validation](HARNESS_VALIDATION.md).
 
 #### How each adapter prevents edits (when restricted):
 1. **Claude Code (`claude`):**
    - In `read-only` and `plan`, AgentBridge passes `--tools Read,Glob,Grep,WebFetch,WebSearch` and `--permission-mode default|plan`. The tools `Write`, `Edit`, `Bash`, `NotebookEdit`, and `KillShell` are **completely omitted from the tool definitions**. The LLM prompt literally receives zero write schemas.
    - External MCP servers are isolated (`--mcp-config {"mcpServers":{}} --strict-mcp-config`).
    - In `edit`, AgentBridge passes `--permission-mode acceptEdits`, unlocking `Write` and `Edit`.
-   - In `full` *(default)*, it passes `--permission-mode bypassPermissions`.
+   - In `full`, it passes `--permission-mode bypassPermissions`.
 2. **OpenAI Codex (`codex`):**
    - In `read-only` and `plan`, AgentBridge passes `--sandbox read-only`. Codex CLI runs inside an OS-level container sandbox where filesystem mutations are denied by kernel/sandbox restrictions.
    - In `edit`, Codex passes `--sandbox workspace-write` (strictly restricted to the workspace directory, excluding temp directories).
-   - In `full` *(default)*, it passes `--sandbox danger-full-access`.
+   - In `full`, it passes `--sandbox danger-full-access`.
 3. **OpenCode (`opencode`):**
    - In `read-only` / `plan`, AgentBridge generates an inline runtime policy: `permission: { edit: 'deny', bash: 'deny', webfetch: 'allow' }`. Any tool invocation attempting filesystem modification is denied by OpenCode's policy engine.
-   - In `full` *(default)*, all tools including `bash` and file writes are allowed.
+   - In `full`, all tools including `bash` and file writes are allowed.
 4. **Antigravity (`agy`):**
    - `agy` has no built-in read-only flag. When restricted, AgentBridge creates a disposable, private HOME with generated `.gemini/antigravity-cli/settings.json` specifying explicit deny rules: `deny: ['command(*)', 'unsandboxed(*)', 'write_file(*)']` (`execute_url(*)` is added only when the run also passes `offline: true`).
-   - In `full` *(default)*, `--dangerously-skip-permissions` is passed.
+   - In `full`, `--dangerously-skip-permissions` is passed.
 5. **Pi (`pi`):**
    - Runs in an ephemeral sandbox directory (`PI_CODING_AGENT_DIR`), stripping user packages and skills (`-ns -np -ne`).
    - In `read-only` and `plan`, AgentBridge passes `--exclude-tools bash,powershell,edit,write,codemode`. Pi completely unregisters those tools from its active runtime.
    - In `edit`, `bash` and `powershell` are excluded, allowing only file read/write.
-   - In `full` *(default)*, no tools are excluded; full shell and file capabilities are active.
+   - In `full`, no tools are excluded; full shell and file capabilities are active.
    - **MCP Exposure in Pi:** If third-party MCP servers (e.g. `rea`) are registered in `~/.pi/agent/mcp.json`, their exposure must be `"direct"`. Pi's `"deferred"` mode does not present tool schemas to the model at session start.
-6. **Endpoints (Ollama, OpenRouter, vLLM):**
+6. **Additional CLI adapters (Cursor, Grok, Gemini CLI, Devin):**
+   - Each adapter uses the provider's current CLI protocol and native permission controls where available. Restricted modes on Grok, Gemini CLI, and Devin are not an AgentBridge-enforced filesystem/process sandbox. See [Harness validation](HARNESS_VALIDATION.md) for exact flags, unsupported options, and local readiness.
+7. **Endpoints (Ollama, OpenRouter, vLLM):**
    - When running with a coding harness (`--harness claude|pi`), the model inherits the exact tool allowlists and sandboxes described above.
    - When running without a harness (`--harness none` or plain question), it makes a direct HTTP API call with no filesystem tools attached.
-7. **Subagent MCP Isolation & Passthrough Policy:**
+8. **Subagent MCP Isolation & Passthrough Policy:**
    - **Isolation by Default:** When delegating to subagents via `ask_*` or `dispatch_*`, AgentBridge isolates external MCP servers to prevent prompt injection or exfiltration loops.
    - **Host MCP Inspection with `ab doctor`:** Running `ab doctor` automatically detects and lists host MCP servers declared in `~/.pi/agent/mcp.json`, `.mcp.json`, `~/.codex/config.toml`, and `.gemini/config/mcp_config.json`.
    - **Allowed MCP Passthrough:** the operator sets the ceiling with `AGENTBRIDGE_MCP_PASSTHROUGH` (names, or `*`; unset = none) and `AGENTBRIDGE_MCP_SOURCE_DIR`; the project `.mcp.json` is also read. A call's `mcpPassthrough` can only select a subset of that ceiling. Only stdio servers are passed, always `exposure: "direct"`, for every harness (Codex gets them as `-c mcp_servers.*` including env).
    - **Offline Gate:** When `offline: true` is passed to a run, external MCP passthrough is **strictly disabled** regardless of configuration. It is also disabled under `read-only` and `plan`.
    - **Skills:** `skills: true` / `AGENTBRIDGE_ENABLE_SKILLS=1` drops Pi's `-ns` and links `~/.pi/agent/skills` into the per-run home (junction on Windows, removed before the home is deleted, so the real folder is never touched). Project skill roots (`.agents/skills`, `.claude/skills`) are resolved up to the git root; untracked ones are copied into `--worktree` sandboxes without appearing in the diff.
    - **Account profiles:** `ab account add` links skills/prompts/plugins/hooks/`AGENTS.md` (never credentials, sessions or history) and mirrors Codex `[mcp_servers.*]` into the new profile; `--no-share` disables it, `--copy-current` copies everything. `ab account remove --purge` unlinks before deleting.
-8. **MCP Bridge Ceiling (`AGENTBRIDGE_PERMS`) & How to Change It:**
+9. **MCP Bridge Ceiling (`AGENTBRIDGE_PERMS`) & How to Change It:**
    - When AgentBridge runs as an MCP server, child runs can never exceed the install-time permission ceiling.
    - **Default Ceiling is `full`:** The agent has full power to use terminal commands, shell, and file editing.
    - **Restricted Ceilings:** If you installed with a lower ceiling (`ab install <agent> --permissions edit`), child runs are restricted to at most `edit`.
@@ -341,7 +348,7 @@ Events yielded by `run()`:
 {type:'text', delta}
 {type:'thinking', delta}
 {type:'tool', name, input, output?}
-{type:'usage', input, output, cost?}
+{type:'usage', input, output, cost?, incremental?}
 {type:'error', message}
 {type:'raw', data}
 ```
@@ -353,6 +360,8 @@ Result:
 ```
 
 `cost` is only reported when the agent reports it (Claude does; Codex does not, and it is never invented).
+
+For usage events, `incremental: true` means `input`, `output`, and `cost` are deltas to add to the current attempt's totals. When `incremental` is absent or false, the event is a snapshot of the current totals; replace the previous snapshot instead of adding it. Some agents do not emit usage events. The returned `Result.usage` contains the aggregate for the final attempt, so do not add it again to that attempt's usage events. Budget tracking keeps usage from earlier fallback attempts and can stop a run early when usage events show that a limit has been reached.
 
 ### Sessions
 
@@ -379,6 +388,8 @@ const c = await ask('claude', { prompt: 'Try a different approach', session: { m
 
 By design, AgentBridge prioritizes safety and least privilege by default. Depending on the agent CLI and the requested permission mode, certain tools (especially web search, web fetch, external network access, and shell execution) may be enabled, sandboxed, or restricted.
 
+Permission labels are normalized requests, not identical guarantees across all providers. Native sandboxing and tool exclusion are available in some harnesses; generic adapters may use prompt guidance or provider defaults. In particular, `read-only` and `plan` do not universally isolate the filesystem, hooks, MCP servers, or subprocesses. See [Harness validation](HARNESS_VALIDATION.md) for controls and verification scope.
+
 The table below summarizes tool availability and network access across adapters and modes:
 
 | Agent | `read-only` / `plan` | `edit` | `full` | Web Search / Network Access | How to Grant Full Network / Web Access |
@@ -388,6 +399,7 @@ The table below summarizes tool availability and network access across adapters 
 | **OpenCode** (`opencode`) | Read files, search codebase, `webfetch`, `websearch`. `bash` denied. | File edits allowed. `bash` denied, `webfetch` and `websearch` allowed. | Unrestricted (`edit`, `bash`, `webfetch`, `websearch`). | Web fetch and search tools (`webfetch`, `websearch`) are permitted in all modes. Direct shell commands (`bash`) require `full`. | Use `--permissions full` if the model needs to run terminal curl/pip/npm commands. |
 | **Antigravity** (`agy`) | Read files, `execute_url` (web fetch/search). Shell command execution denied. | File edits allowed, `execute_url` allowed. Shell command execution denied. | Unrestricted (`--dangerously-skip-permissions`). | Web URL inspection and searches (`execute_url`) are allowed across all modes. Arbitrary terminal commands require `full`. | Use `--permissions full` if the model needs terminal shell execution (`command(*)`) or unsandboxed tools. |
 | **Pi** (`pi`) | Read files, search tools (`tool_search`). Shell/edit denied. | File edits allowed, `tool_search` allowed. Shell denied. | All tools allowed without exclusion. | Pi connects to network APIs and tools by default. Telemetry and version checks stay suppressed for speed. | Use `--permissions full` or pass community skills/extensions via `--permissions full` or `extraArgs`. |
+| **Cursor, Gemini, Devin, Grok** | Provider-specific modes/guardrails; see validation notes. Do not assume a universal OS sandbox. | Provider-specific; see validation notes. | Native full/bypass controls are requested where available. | Behavior depends on each CLI's own mode and configuration. | See [Harness validation](HARNESS_VALIDATION.md) for exact flags and limits. |
 | **HTTP Endpoints** (`ollama`, OpenRouter, etc.) | **Plain chat HTTP mode**: No tools or web search by default (direct LLM API completion). | Requires harness (`--harness claude` or `--harness pi`) to edit files. | Unrestricted harness mode. | Plain chat endpoints have NO tool runner. For tools or web search, an execution harness is **required**. | Specify `--harness claude` (or `--harness pi`) to wrap the model in a tool-enabled environment. |
 | **Proxy Server** (`ab serve`) | Client-defined function calling supported. | Client-defined function calling supported. | Client-defined function calling supported. | Client function tools are supported. **Hosted server tools** (`type: "web_search"` in OpenAI/Anthropic format) are NOT supported because they require proprietary server-side execution. | Define a client-side search function tool (e.g. `web_search`) executed by your client, or use the MCP Bridge / CLI directly. |
 
@@ -441,8 +453,8 @@ If you are working in sensitive, private, corporate, or air-gapped environments 
    - **Antigravity:** Adds `execute_url(*)` to the sandbox deny rules.
    - **Codex:** Retains strict socket isolation in filesystem sandboxes.
 
-2. **Block File System Modifications (Read-Only):**
-   Use `--permissions read-only` (the default) or `--permissions plan`. Agents cannot edit, overwrite, or delete local files.
+2. **Request Read-Only Behavior:**
+   Use `--permissions read-only` (the default) or `--permissions plan`. The strength of that restriction depends on the selected harness; consult the permission architecture above and [Harness validation](HARNESS_VALIDATION.md). Do not treat generic adapters as a guaranteed filesystem/process sandbox.
 
 ### Execution Transports: CLI vs Persistent App-Server Mode
 
@@ -485,10 +497,8 @@ const res = await ask('codex', {
 5. **Stateful Multi-Turn Sessions:**
    - Native thread continuity (`threadId`, `turnId`) without having to persist and reload entire conversational context trees from disk.
 
-#### Architectural Comparison: Memory Injection vs Resource Linking & Config Mirroring
-Systems like Orca abandon configuration files and inject MCP servers purely in-memory over `app-server` JSON-RPC calls, forcing all workflows into `app-server` mode. Similarly, T3 Code uses an in-memory proxy to intercept tool payloads.
-
-**AgentBridge takes a more resilient and universal approach:**
+#### Resource Linking & Config Mirroring
+AgentBridge supports both batch CLI and daemon workflows by linking shared resources and mirroring configuration:
 - **Resource Linking (Junctions / Symlinks):** Transparently exposes shared skills into isolated sandboxes and subagent directories without copying or polluting repository git history.
 - **Config Mirroring (`config.toml` / `.mcp.json`):** Mirrors MCP definitions into configuration structures.
 
@@ -606,58 +616,17 @@ Agents calling the bridge have native access to:
 
 ---
 
-## MCP Server Timeouts: Eliminating the 60-Second Hard Cutoff
+## MCP Delegation Results and Timeouts
 
-In real-world MCP workflows, timeouts operate at **two distinct architectural levels**:
+MCP calls return standard result objects, typically `{ content: [{ type: "text", text: "..." }], structuredContent?, isError? }`; callers must not assume a string result. Normalize by accepting strings or filtering `content` to text blocks that do not start with `[agentbridge] `, then joining their text with newlines. Use `structuredContent` when present; some clients omit it, so parse JSON from normalized text as a fallback. Treat `isError: true` as failure, and do not present the attestation line as answer text.
 
-```
-┌────────────────────────────────────────────────────────────────────────┐
-│ 1. MCP CLIENT (Claude Code, Pi, Cursor, VS Code, Zed)                  │
-│    SERVER PROTOCOL TIMEOUT (Transport Layer JSON-RPC deadline)         │
-│    👉 MCP SDK Default: 60 SECONDS (if timeout property is omitted)     │
-└───────────────────────────────────┬────────────────────────────────────┘
-                                    │ JSON-RPC tools/call over stdio
-                                    ▼
-┌────────────────────────────────────────────────────────────────────────┐
-│ 2. AGENTBRIDGE (MCP Server Engine)                                     │
-│    TOOL FUNCTION TIMEOUT (Parameter: timeout / timeoutSeconds)         │
-│    👉 AgentBridge Default: 300 SECONDS (5 minutes)                     │
-│                                                                        │
-│    Monitors and terminates child agent subprocess (Codex/Pi/Claude)    │
-└────────────────────────────────────────────────────────────────────────┘
-```
+For tasks expected to take longer than 30 seconds, call `dispatch_<agent>` and then poll `wait_run(id, timeoutSeconds: 30)` until state is `done`, `error`, `lost`, or `cancelled`. Each `wait_run` call is capped at 30 seconds. If capped, `requestedTimeoutSeconds`, `waitTimeoutSeconds`, and `waitCapped` describe the request and effective wait. A wait timeout does not terminate the run; continue waiting or use `check_run`. `check_run` includes bounded recent event snippets and an additive `lastTool` field. If a call errors or returns no useful run id/state, handle it as a failed delegation.
 
-### 1. Protocol / Server-Level Timeout
-The official Model Context Protocol (MCP) TypeScript/Python SDK imposes a strict **60-second** default timeout on any `tools/call` JSON-RPC message. If an MCP server registration omits the `timeout` key, the client cuts the stdio transport at exactly 60 seconds, abruptly killing subagent analysis.
+The task timeout on `ask_*` or `dispatch_*` controls the run lifetime; for example, `timeoutSeconds: 600`, with values at least 1000 interpreted as milliseconds. The MCP transport deadline belongs to the client and its configuration; installers commonly configure 300 seconds, but there is no universal 60- or 300-second cap. A synchronous tool call cannot outlast a fixed client deadline, and server progress/streaming cannot guarantee extending it. Dispatch and bounded polling allow the caller to resume while the run continues. Structured errors report the observed code, message, and cause. Synchronous request cancellation retains code `ABORTED` with detail cause `REQUEST_CANCELLED`; a waiter may report `REQUEST_CANCELLED`. `TIMEOUT` and `AGENT_FAILED` remain distinct. The server cannot promise delivery of a transport failure after the client disconnects.
 
-**The Fix in AgentBridge:**
-- All installers (`ab install`, `ab setup`, `installIde`) automatically configure `"timeout": 300` (or the `--timeout <seconds>` flag) on the `agentbridge` server registration across Pi (`mcp.json`), Claude Code (`mcp.json`), OpenCode (`opencode.json`), Codex (`config.toml`), and IDE configs (Cursor, VS Code, Zed, Windsurf, Claude Desktop).
-- Subagent analyses can now run without fear of 60-second transport kills.
+The optional `subdelegation` argument on `ask_*` and `dispatch_*` defaults to `true` for compatibility. Set it to `false` to instruct and enforce that the child does not spawn more AgentBridge runs; monitoring tools remain available.
 
-### 2. Tool / Function-Level Timeout (`timeout` / `timeoutSeconds`)
-When calling MCP tools like `ask_<agent>` or `dispatch_<agent>`, you or the parent model can specify execution deadlines:
-```json
-{
-  "tool": "ask_codex",
-  "arguments": {
-    "prompt": "Conduct a deep multi-file security audit",
-    "timeout": 600
-  }
-}
-```
-- Both `timeout` and `timeoutSeconds` are fully supported as aliases.
-- Accepts seconds, or milliseconds (values `>= 1000` are converted automatically).
-- Governs the subprocess lifetime managed by AgentBridge.
-
-### 3. Child MCP Servers Configuration (`mcpServers.<name>.timeout`)
-When passing third-party MCP servers via library calls (`mcpServers` option), `McpServerConfig.timeout` is validated and forwarded into:
-- Codex: `-c mcp_servers.<name>.timeout=<seconds>`
-- Pi: `servers[name].timeout` in generated `mcp.json`
-- OpenCode: `cfg.mcp[name].timeout` in generated config
-- Antigravity: `mcp_config.json`
-- Claude: `mcp.json`
-
----
+The `timeout` field on child MCP server configurations (`mcpServers.<name>.timeout`) is validated and forwarded to supported harnesses; Codex receives its native `tool_timeout_sec` field in seconds.
 
 ## Universal Open Agent Skills (`.agents/skills`) & Conflict Prevention
 
@@ -682,7 +651,7 @@ Pi scans both your workspace root (`./.agents/skills/`) and your global home (`~
 
 ## Multiple accounts and managed profiles (`ab account`)
 
-Inspired by Orca, AgentBridge provides isolated profile directories ("Managed Homes") for each account, eliminating credential collisions, session leaks, and multi-tenant token conflicts.
+AgentBridge provides isolated profile directories ("Managed Homes") for each account, eliminating credential collisions, session leaks, and multi-tenant token conflicts.
 
 ### Architecture & Isolation
 Each account is assigned an isolated directory under `~/.agentbridge/profiles/<agent>/<accountName>/`:
@@ -949,55 +918,40 @@ const promptHeader = formatMemoryForPrompt(process.cwd());
 
 ## Proactive quota probing (`ab quota` & `check_quota` MCP tool)
 
-Instead of waiting for an HTTP 429 error, AgentBridge proactively polls provider usage APIs (Anthropic OAuth 5-hour/7-day windows and ChatGPT Wham backend endpoints). This powers both manual command-line inspection and autonomous agent-to-agent delegation.
+AgentBridge can read a supported provider's remaining quota before dispatch, or wait for a measured reset. This is distinct from error-driven fallback. If no quota flag or fallback threshold is set, AgentBridge does not probe quota; ordinary fallback defaults to `RATE_LIMITED` and can be configured with `--fallback-on RATE_LIMITED,TIMEOUT,AGENT_FAILED`.
 
-### CLI Usage
+### Readers and measurement limits
+
+Proactive percentage measurements cover Claude Code, Codex, Antigravity (`agy`), and conditional Gemini OAuth. AGY's native read-only `/usage` reports model-family pools with five-hour and weekly windows; it does not report individual model budgets. Gemini uses the CLI's internal Code Assist quota protocol and exact model `REQUESTS` buckets. Its window duration is unknown (`windowMinutes: 0`); reset time is included only when returned. Gemini requires an unexpired file-based OAuth credential. Expired or absent OAuth, keychain-only login, API-key auth, and Vertex AI are unknown; credentials are not refreshed or rewritten. Full endpoint details and limitations for all providers are in the [provider quota support matrix](PROVIDER_QUOTA_SUPPORT.md).
+
+Cursor, Grok, Devin, OpenCode, Pi, Ollama, and custom endpoints currently have no supported measured remaining-percentage reader. Usage totals, task caps, API billing credits, and local execution do not establish a remaining OAuth percentage. Explicit unsupported per-route `@N` thresholds are rejected before the primary starts; a final provider without a quota reader can serve as the unmetered fallback without `@N`; a metered route inherits the global threshold unless overridden. A supported provider whose measurement is unavailable is unknown and cannot pass a threshold. Unknown is never treated as 100% remaining.
+
+### Quota-aware CLI routing
+
 ```bash
-# Check quota health across all agents
-ab quota
-
-# Check a specific agent with custom threshold
-ab quota claude --threshold 85%
-
-# Output machine-readable JSON
-ab quota --json
+ab run claude "Review and implement this change" --model sonnet --min-remaining-percent 30 \
+  --fallback 'agy@15:gemini-3.8-flash-low,codex@20,ollama:qwen2.5-coder:14b'
 ```
 
-### MCP Tool: `check_quota`
-Exposed to all subagents connected via the AgentBridge MCP server. Allows autonomous agents to dynamically query their own (or another agent's) remaining token quota before launching resource-heavy sub-tasks:
+The primary needs at least 30% remaining; AGY and Codex use their own explicit thresholds. Ollama is an ungated explicit fallback. Thresholds are inclusive, and percentages are compared without rounding. A known exhausted secondary window blocks a route. `--wait-for-quota` waits for a measured reset and defaults the primary threshold to 20%; `--max-quota-wait` bounds the wait. A waiting run is not a durable scheduled job and does not resume after its CLI or bridge process restarts.
 
-**Input Schema:**
-```json
-{
-  "agent": "codex",              // Required: agent name ("codex", "claude", etc.)
-  "thresholdPercent": 95         // Optional: throttling threshold percentage (default 95)
-}
+Fallback triggers default to `RATE_LIMITED`; use `--fallback-on` to include other supported error codes such as `TIMEOUT` or `AGENT_FAILED`. AgentBridge skips fallback if tools have already run under `edit` or `full` permissions, avoiding a repeat of possible side effects.
+
+`check_quota` reports `usedPercent`, `remainingPercent`, `windowMinutes`, and reset fields (epoch milliseconds or `null`), plus `measured`, `supported`, and `source`. Percentage fields can be `null`. Supply `model` for model-aware readers, for example `check_quota({ agent: 'agy', model: 'claude-sonnet-5-5' })`. The MCP tool returns a result envelope; inspect its `structuredContent` or text block, not a bare object assumption. Its `thresholdPercent` is a used-percent health threshold (default 95%; Claude weekly health uses 98%), distinct from route policy's remaining-percent threshold.
+
+```js
+dispatch_claude({
+  prompt: "Review and implement this change",
+  model: "sonnet",
+  permissions: "edit",
+  fallback: [
+    { agent: "agy", model: "gemini-3.8-flash-low", minRemainingPercent: 15 },
+    { agent: "codex", minRemainingPercent: 20 },
+    { agent: "ollama", model: "qwen2.5-coder:14b" },
+  ],
+  quotaPolicy: { minRemainingPercent: 30 },
+});
 ```
-
-**Output Structure:**
-```json
-{
-  "agent": "codex",
-  "usedPercent": 82,
-  "remainingPercent": 18,
-  "windowMinutes": 300,
-  "resetAt": 1791500000000,
-  "okToProceed": true,
-  "formatted": "[codex] 82% used (300m window, reset: 2026-10-09T18:00:00.000Z) - OK"
-}
-```
-
-### The Escalation Ladder ("A Escadinha") Pattern
-Agents can use `check_quota` to implement a multi-tiered escalation ladder:
-1. **Tier 1 (Flagship / Heavy Reasoning):** Codex or Claude 3.7 Sonnet.
-2. **Tier 2 (Fast / High-Throughput):** OpenCode, Pi, or Gemini Flash.
-3. **Tier 3 (Zero-Cost / Unlimited Local):** Ollama (e.g. `qwen2.5-coder:14b`).
-
-**Autonomous Quota Decision Rule:**
-- **If remaining quota > 15% (`usedPercent < 85`):** Subagent delegates to `ask_codex` with `permissions: "edit"`.
-- **If remaining quota <= 15% (`usedPercent >= 85`):** Subagent steps down the ladder to preserve quota, delegating to `ask_ollama` or `ask_pi`.
-
----
 
 ## Zero-friction IDE & CLI MCP installers (`ab install <target>`)
 
@@ -1020,11 +974,11 @@ ab install all            # Detects and configures all present CLIs on PATH
 
 ---
 
-AgentBridge supports an extended roster of modern AI agents and protocols:
+AgentBridge supports an extended roster of modern AI agents and protocols. Current CLI argument mappings and local readiness status for the additional harnesses are recorded in [Harness validation](HARNESS_VALIDATION.md).
 
 | Provider | Identifier | Command | Supported Models |
 |---|---|---|---|
-| **Cursor CLI** | `cursor` | `cursor agent ...` | `auto`, `gpt-5.3-codex`, `claude-opus-4-8-thinking-high-fast`, `grok-4.7` |
+| **Cursor CLI** | `cursor` | `cursor-agent --print ...` | `auto`, `gpt-5.3-codex`, `claude-opus-4-8-thinking-high-fast`, `grok-4.7` |
 | **xAI Grok** | `grok` | `grok ...` | `grok-4.7`, `grok-4`, `grok-3` |
 | **Google Gemini CLI** | `gemini` | `gemini ...` | `gemini-3.5-flash`, `gemini-3-pro-preview`, `gemini-3.1-flash-lite`, `gemini-2.5-flash`, `gemini-2.5-pro` |
 | **Devin CLI** | `devin` | `devin run ...` | `default`, `devin-default` |
@@ -1119,7 +1073,7 @@ const r = await ask('claude', { prompt, fallback: ['codex', { agent: 'pi', model
 r.fallback // { used: 'codex', attempts: [{ agent: 'claude', code: 'RATE_LIMITED', ... }], contextLost: true }
 ```
 
-- Entries are `agent`, `agent:model` (split at the first colon) or `{ agent, model }`. `fallbackOn` defaults to `RATE_LIMITED`.
+- Entries are `agent`, `agent:model` (split at the first colon), `agent@N:model` (per-route inclusive remaining quota threshold), or `{ agent, model, minRemainingPercent? }`. `fallbackOn` defaults to `RATE_LIMITED`.
 - A fallback starts a **new session** with its own model; effort and `extraArgs` are not carried over (they are agent-specific), and the result says so with `contextLost`.
 - **Side-effect guard:** if the failed attempt already ran tools under `edit`/`full` permissions, the chain stops instead of re-running the task on a half-changed tree.
 - Works in the library, the CLI (`--fallback`, also on `ab serve`), the MCP `ask_*` tools (`fallback` argument) and the proxy (which answers 429 with `retry-after`). Telemetry and context policy are attributed to the agent that actually answered.
@@ -1456,7 +1410,7 @@ CONTRACT.md          the binding spec for adapters, options, events and errors
 
 - **Codex has no incremental streaming** in its `--json` mode, so `text` arrives in large chunks rather than token by token. This is a CLI limitation, documented rather than faked.
 - **OpenCode latency varies** with the backend model/provider; use generous timeouts for slow models. A stall detector aborts a run that makes no progress.
-- **Quota probing is provider-specific:** `ab quota` reads Anthropic's OAuth usage API and Codex's usage backend only; other agents rely on in-flight `RATE_LIMITED` detection (see the "Proactive quota probing" section above).
+- **Quota probing is provider-specific:** see [Proactive quota probing](#proactive-quota-probing-ab-quota--check_quota-mcp-tool) and the [provider quota support matrix](PROVIDER_QUOTA_SUPPORT.md). Unsupported and unavailable measurements do not count as available quota.
 - **Compaction for codex/opencode is summarize-and-continue** (a new session), not in-place compaction.
 - **Proxy:** tool-mode replies are buffered; stateless requests without `x-ab-session`; ignored sampling parameters (see above).
 - Codex fork/`exec resume` behavior depends on the installed CLI version.

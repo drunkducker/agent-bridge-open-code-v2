@@ -20,7 +20,7 @@ The MCP server `agentbridge` exposes other coding agents as tools. Each runs as 
 
 ## When to use which
 
-- **Short, bounded task (under ~2 min):** `ask_<agent>`.
+- **Short, bounded task (expected to finish within 30 seconds):** `ask_<agent>`.
 - **Long task, or several in parallel:** `dispatch_<agent>` for each, keep working, then `wait_run` on every id. Use an `idempotencyKey` so a retry does not start a duplicate.
 - **Risky refactor or complex changes:** First call `checkpoint_create(message="Before refactor")`, run the delegation with `ask_*` or `dispatch_*`, verify tests, and if broken, call `checkpoint_rollback(id)`.
 - **Second opinion or review:** ask a *different* agent than the one that wrote the code; give it the file paths and the question, not your conclusion.
@@ -34,22 +34,22 @@ The other agent has none of your context. Give it: the goal, the exact files/pat
 
 AgentBridge is engineered with a **Zero-Accident Safety Lock**:
 - **Why it exists:** Unrestricted subagent execution is dangerous. An autonomous agent asked to "audit this function" or "check tests" could hallucinate and overwrite source code or execute destructive bash commands.
-- **The Safety Lock (Default: `read-only`):** By default, every delegation has its safety lock engaged. Subagents operate with read-only tools and cannot modify your files, branch state, or run shell mutations.
+- **Default Request (`read-only`):** Delegations default to requesting read-only behavior. The enforcement mechanism depends on the destination harness; some use native sandboxes/tool filters, while other CLI adapters may rely on prompt guidance or provider defaults.
 - **Intentional Unlocking:** When you *want* the agent to write code, refactor, or run tests, you must explicitly unlock it by passing `permissions: "edit"` or `permissions: "full"`.
 - **The Inviolable Ceiling:** The Permission Ceiling defaults to `full` (so you can request whatever powers you need), but if you or the user configure a stricter ceiling (e.g. `ab config set permissions-ceiling edit`), AgentBridge acts as an unbypassable circuit-breaker: subagents cannot escalate privileges beyond that ceiling under any circumstances.
 - **Configurability:** You can customize persistent defaults per project or globally via `ab config set default-permissions <level>`.
 
-> ⚠️ **CRITICAL INSTRUCTION FOR DELEGATION:** Whenever you delegate a task that requires creating or modifying files, refactoring code, or running build/test commands, you **MUST explicitly unlock the safety lock by passing `permissions: "edit"` or `permissions: "full"`**. If you omit it, the subagent will safely run with the safety lock engaged in `read-only` mode and will refuse to modify files.
+> ⚠️ **DELEGATION INSTRUCTION:** When you delegate a task that requires creating or modifying files, refactoring code, or running build/test commands, explicitly request `permissions: "edit"` or `permissions: "full"`. Without it, AgentBridge requests `read-only`; provider-specific limitations mean that this request is not a universal OS-level guarantee.
 
 | Permission | Filesystem & Tools Allowed | When to Use | Under the Hood Enforcement |
 |---|---|---|---|
-| `full` | **All tools allowed**, including shell/bash execution. | Code edits, test runs, builds, package installs, automated fixes. | Bypasses permission prompts; full execution sandbox. |
-| `edit` | Read, Grep, Glob, WebFetch, WebSearch + **File Write & Edit**. (Bash blocked). | Refactoring, bug fixes, file creation & code edits without arbitrary shell. | Unlocks Write/Edit tools; workspace-write sandbox restricted to cwd. |
-| `plan` | Read, Grep, Glob, WebFetch, WebSearch. **No edits, no bash.** | Solution design, checklist proposals, diff reviews. | Read-only sandbox with plan prompt mode; writes blocked. |
-| `read-only` *(default)* | Read, Grep, Glob, WebFetch, WebSearch. **No edits, no bash.** | Reviews, code audits, questions, file inspection. | Tool allowlists exclude Write/Edit/Bash; OS-level sandbox enforces read-only; write deny rules. |
+| `full` | Requests the provider's full tool and execution mode, including shell where supported. | Code edits, test runs, builds, package installs, automated fixes. | Uses each provider's native full-access control where available; not every provider supplies an OS sandbox. |
+| `edit` | Requests file edits, with arbitrary shell disabled where supported. | Refactoring, bug fixes, file creation & code edits. | Provider-native tool/sandbox controls; varies by harness. |
+| `plan` | Requests planning without edits. | Solution design, checklist proposals, diff reviews. | Provider-native plan mode, tool filters, or prompt guidance. |
+| `read-only` *(default)* | Requests read-only behavior. | Reviews, code audits, questions, file inspection. | Provider-native sandbox, tool filters, deny rules, or prompt guidance. |
 
 > **How AgentBridge Prevents Edits:**
-> In `read-only` and `plan` modes, write tools (`Write`, `Edit`, `Bash`) are physically omitted from tool definitions passed to Claude Code and Pi (`--tools Read,Glob,Grep,WebFetch,WebSearch` / `--exclude-tools write,edit,bash`). Codex is placed in an OS container sandbox (`--sandbox read-only`), and Antigravity gets a throwaway profile with explicit deny rules (`write_file(*)`). The model literally cannot mutate your files.
+> **Provider-specific enforcement:** Claude Code and Pi receive restricted tool lists; Codex uses its sandbox modes; Antigravity uses a throwaway profile with deny rules; Cursor uses its native ask/plan modes when applicable. Other generic CLI adapters may rely on prompt guidance or provider defaults. These controls do not guarantee that provider configuration, hooks, MCP servers, or subprocesses cannot cause side effects. See [Harness validation](../../docs/HARNESS_VALIDATION.md).
 
 ## Options that matter
 
@@ -61,28 +61,32 @@ AgentBridge is engineered with a **Zero-Accident Safety Lock**:
     - If you only want a quick text answer without filesystem access, omit `harness` under `read-only` (or set `harness: "none"`), and it runs as a fast direct HTTP API call.
 - `model`: default is the cheapest model for that agent; set it only when asked or when the task needs more. Model names are **smart-resolved**: you can specify models with or without provider prefixes (e.g. `glm-5.3-flash:cloud` or `ollama/glm-5.3-flash:cloud`). AgentBridge automatically handles provider namespaces for Pi, Ollama, and other endpoints.
 - `effort`: `low` ... `max`.
-- `timeoutSeconds` / `timeout`: default 300 seconds; raise it for long tasks or deep analysis (e.g. 600). Supports both seconds or milliseconds.
+- `timeoutSeconds` / `timeout`: task lifetime limit (default 300 seconds); values at least 1000 are interpreted as milliseconds.
 - `session`: `{mode:'continue', id}` to follow up in the same agent conversation (`new`, `ephemeral`, `continue`, `fork`).
-- `fallback`: e.g. `["codex","ollama:glm-5.3-flash:cloud"]`. If the agent fails with `RATE_LIMITED` (or a code listed in `fallbackOn`), the next one answers. It is skipped if the first agent already ran tools under `edit`/`full`, to avoid redoing side effects. The result's `fallback` field says who answered and whether context was lost (fallback agents start a fresh session).
+- `fallback`: e.g. `["codex@15","ollama:glm-5.3-flash:cloud"]` or `{ agent: "codex", minRemainingPercent: 15, model }`. A route threshold overrides the primary quota threshold; CLI syntax puts `@N` before the first colon, as in `codex@15:model`. If a route override is present without a global quota setting, CLI enables the default 20% primary threshold. Do not assign a threshold to unmetered Ollama. If the agent fails with `RATE_LIMITED` (or a code listed in `fallbackOn`), the next one answers. It is skipped if the first agent already ran tools under `edit`/`full`, to avoid redoing side effects. The result's `fallback` field says who answered and whether context was lost (fallback agents start a fresh session).
 - `transport`: `auto` (default), `cli`, `app-server`.
   - Pass `transport: "app-server"` for **Codex** to run via a persistent JSON-RPC 2.0 daemon instead of batch process spawns.
+- `quotaPolicy`: `{ minRemainingPercent, waitForReset?, maxWaitMs? }` gates an ordered route on measured remaining quota. Unknown measurements do not pass the threshold; quota waiting is separate from execution timeout.
+- Codex `yolo: true` (CLI `--yolo`) requests Codex's native bypass mode and requires explicit `permissions: "full"`; it does not raise the operator permission ceiling.
+- Claude `permissions: "full"` maps to `bypassPermissions`. `dangerouslySkipPermissions: true` (CLI: `--dangerously-skip-permissions`) explicitly adds Claude's literal flag and requires full permissions; it does not raise the configured ceiling.
+- OpenCode `full` uses its native `allow` permission configuration and approves permission requests once; Antigravity (`agy`) `full` requests its native `--dangerously-skip-permissions` mode.
+- Cursor `full` uses `--force`; `read-only` and `plan` use Cursor's native `ask` and `plan` modes. Gemini `full` uses `--yolo`. Grok `full` requests `--permission-mode bypassPermissions`. Devin uses `--permission-mode dangerous` for `full` and `normal` otherwise; its lower modes are not an OS isolation boundary.
+- Pi applies its tool filter for restricted modes and has no dedicated native YOLO flag. `--yolo` is a Codex-only AgentBridge option; it is not a generic cross-harness flag.
+- Generic adapter permission modes can be advisory. Do not assume `read-only`/`plan` prevent provider hooks, MCP configuration, or subprocesses from causing side effects. See [Harness validation](../../docs/HARNESS_VALIDATION.md) for the documented scope and checks.
 
-## MCP Server Timeout: Eliminating the 60-Second Hard Limit
+## MCP results, waits, and timeouts
 
-In MCP environments, timeout operates at **two distinct architectural levels**:
+MCP calls return a result object, commonly `{ content: [{ type: "text", text: "..." }], structuredContent?, isError? }`; do not assume a tool result is a string. Normalize strings directly or collect only `content` text blocks that do not start with `[agentbridge] `, then join their text with newlines. Use `structuredContent` when present; some clients omit it, so parse JSON from normalized text as a fallback. Treat `isError: true` as failure.
 
-1. **Protocol / Server-Level Timeout (MCP Client transport):**
-   - The official MCP SDK client (used by Claude Code, Cursor, Pi, and IDEs) enforces a default **60-second** network deadline for any JSON-RPC `tools/call`.
-   - If the MCP server configuration does not define a `timeout`, the client cuts the connection at 60 seconds regardless of what the subagent is doing.
-   - **Resolution:** AgentBridge installers (`install`, `setup`, `install-ide`) automatically write `"timeout": 300` (or your `--timeout` flag) directly into the client's server entry (e.g. `mcpServers.agentbridge.timeout = 300` in Pi's `mcp.json`, Codex's `config.toml`, OpenCode's `opencode.json`, and IDE JSONs).
+Use `ask_<agent>` for a short, bounded task. For work that may exceed 30 seconds, use `dispatch_<agent>`, then poll `wait_run(id, timeoutSeconds: 30)` until state is `done`, `error`, `lost`, or `cancelled`. A wait call is capped at 30 seconds; larger requested values are capped and reported by `requestedTimeoutSeconds`, `waitTimeoutSeconds`, and `waitCapped`. A timeout from `wait_run` means the run is still active; continue waiting or inspect it with `check_run`. If a call errors or returns no useful run id/state, report the failure.
 
-2. **Tool / Execution-Level Timeout (Function Parameter):**
-   - Passed directly as an argument inside tool calls (`ask_codex({ prompt: "...", timeout: 600 })` or `timeoutSeconds: 600`).
-   - Instructs AgentBridge how long to let the underlying subagent subprocess run before cancelling it.
-   - Accepts seconds or milliseconds (values `>= 1000` are converted automatically).
+Keep the CLI or MCP server process alive while a run is quota-waiting. Run status supports observation; it is not a durable scheduler and a waiting run does not resume after its bridge process restarts.
 
-3. **Child / Passthrough MCP Timeout:**
-   - When providing `mcpServers` to child agents in AgentBridge options, `McpServerConfig.timeout` is validated and forwarded to all underlying harness adapters (Codex, Pi, OpenCode, Antigravity, and Claude).
+The task timeout (`timeoutSeconds` on ask/dispatch) controls how long the delegated run may execute; for example, `timeoutSeconds: 600`, with values at least 1000 interpreted as milliseconds. The MCP client's transport deadline is client- and configuration-specific; installers commonly configure 300 seconds, but there is no universal 60- or 300-second limit. A synchronous call cannot outlast a fixed client deadline, and server-side streaming/progress cannot guarantee extending it. Dispatch plus bounded waits lets the caller resume polling while the run continues. Synchronous request cancellation retains code `ABORTED` with detail cause `REQUEST_CANCELLED`; a waiter may report `REQUEST_CANCELLED`.
+
+For usage events, `incremental: true` means add the event as a delta; absent or false means replace with the current snapshot. `Result.usage` aggregates the final attempt. Budget tracking also retains usage from earlier fallback attempts. Codex child MCP server deadlines use native `tool_timeout_sec`; temporary HTTP bridges injected for Codex use 300 seconds.
+
+`subdelegation: false` on `ask_*` or `dispatch_*` instructs the child not to spawn further AgentBridge runs and enforces that restriction for bridge spawning; monitoring tools remain available. It is optional and defaults to `true` for backward compatibility.
 
 ## Universal Skills (`.agents/skills`) & Zero Collision Guarantee
 
@@ -117,9 +121,7 @@ AgentBridge supports **Dual-Mode Execution** for OpenAI Codex:
      - **Clean Cancellation:** Turns can be aborted cleanly via `turn/cancel` notifications without `SIGKILL` or corrupting half-written files.
      - **Stateful Thread Continuity:** Native thread and turn tracking across multiple conversational steps.
 
-> **Why Resource Linking & Config Mirroring were chosen over in-memory MCP injection:**
-> Other systems (like Orca) abandon `config.toml` and inject MCPs entirely in-memory via `app-server` JSON-RPC calls, which forces users to run exclusively in `app-server` mode.
-> AgentBridge instead combines **Resource Linking (Junctions)** for skills with **Config Mirroring (`config.toml` / `.mcp.json`)** for MCP servers. This ensures that your skills and MCPs are seamlessly available **in both modes** (`cli` and `app-server`), as well as across Pi, Claude Code, OpenCode, and Antigravity, without requiring complex memory hacks or breaking existing setups.
+AgentBridge combines **Resource Linking (Junctions)** for skills with **Config Mirroring (`config.toml` / `.mcp.json`)** for MCP servers. This keeps skills and MCPs available in both Codex execution modes (`cli` and `app-server`), as well as across Pi, Claude Code, OpenCode, and Antigravity.
 
 ## Delegating to Subagents
 
@@ -180,42 +182,29 @@ When delegating tasks via `ask_*` or `dispatch_*`, AgentBridge enforces **determ
   - **Account & Environment Pool Keying:** Codex daemon instances are keyed by workspace path, `CODEX_HOME`, account identity, and API key, preventing cross-profile credential reuse.
   - **Strict RPC Deadlines & Clean Cancellation:** Handshake (`initialize`) and all RPCs enforce deadlines and respect `AbortSignal` without unhandled Promise rejections. Failed turn statuses (`status: failed` or error descriptors) are explicitly caught and propagated as `AGENT_FAILED`.
 
-## Proactive Quota Awareness & The Escalation Ladder ("A Escadinha")
 
-To avoid burning expensive subscription tokens or hitting 429 rate limits midway through a task, you can query remaining token quotas and dynamically step down the escalation ladder:
+## Quota checks and fallback
 
-### 1. The `check_quota` MCP Tool
-Call `check_quota` with `{ "agent": "codex" }` or `{ "agent": "claude" }`.
-It returns:
-- `usedPercent`: percentage of the quota window consumed (e.g. `82`).
-- `remainingPercent`: percentage of tokens still available (e.g. `18`).
-- `windowMinutes`: window length (e.g. 300 minutes for 5-hour session window).
-- `resetAt`: ISO timestamp when the quota window resets.
-- `okToProceed`: boolean indicating if usage is safely below threshold (default < 95%).
+AgentBridge has proactive remaining-percentage readers for Claude Code, Codex, Antigravity (`agy`), and conditional Gemini OAuth. See the [provider quota support matrix](../../docs/PROVIDER_QUOTA_SUPPORT.md) for scope and limitations. AGY quota is shared by model family (five-hour and weekly windows). Gemini quota is model-specific, file-based OAuth only, and has unknown window duration; expired or unavailable credentials, API-key, and Vertex identities report unknown. Cursor, Grok, Devin, OpenCode, Pi, Ollama, and custom endpoints have no supported measured percentage reader. Unknown or unsupported values do not mean unlimited.
 
-### 2. Autonomous Quota Routing Example
-Before spawning a resource-intensive subagent (like Codex or Claude 3.7 Sonnet):
-1. Query current quota:
-   `check_quota({ "agent": "codex" })`
-2. **If `remainingPercent > 15` (`usedPercent < 85`):** You have plenty of quota headroom. Spawn your primary subagent:
-   `ask_codex({ "prompt": "Implement comprehensive test suite for auth.ts", "permissions": "edit" })`
-3. **If `remainingPercent <= 15` (`usedPercent >= 85`):** Step down the escalation ladder ("escadinha") to preserve expensive tokens, and delegate the task to a free local model or lighter agent:
-   `ask_ollama({ "prompt": "Implement comprehensive test suite for auth.ts", "model": "qwen2.5-coder:14b", "permissions": "edit" })`
-   or `ask_pi({ "prompt": "...", "permissions": "edit" })`.
+With no quota policy flags or fallback `@N` threshold, fallback is error-driven: it defaults to `RATE_LIMITED`, and `fallbackOn` / `--fallback-on` can add errors such as `TIMEOUT` and `AGENT_FAILED`. If tools already ran under `edit` or `full`, fallback is skipped to avoid repeating possible side effects.
 
-### 3. Automatic Cascading Fallback Chains
-You can also configure automatic fallback ladders on `ask_*` calls:
-```json
-{
-  "tool": "ask_codex",
-  "arguments": {
-    "prompt": "Refactor database migration scripts",
-    "permissions": "edit",
-    "fallback": ["claude", "pi", "ollama:qwen2.5-coder:14b"]
-  }
-}
+Error-only fallback example (no quota flags or `@N` thresholds):
+
+```bash
+ab run claude "Review this change" --fallback 'codex,agy,ollama:qwen2.5-coder:14b' --fallback-on RATE_LIMITED,TIMEOUT,AGENT_FAILED
 ```
-If Codex hits a rate limit, AgentBridge automatically cascades down the ladder to Claude, then Pi, then local Ollama!
+
+An explicit quota threshold makes an ordered route depend on measured remaining quota. Supported but unavailable measurements do not pass; unsupported explicit per-route `@N` overrides are rejected before the primary starts; a final provider without a quota reader can serve as the unmetered fallback without `@N`; a metered route inherits the global threshold unless overridden. Example:
+
+```bash
+ab run claude "Review and implement this change" --model sonnet --permissions edit --min-remaining-percent 30 \
+  --fallback 'agy@15:gemini-3.8-flash-low,codex@20,ollama:qwen2.5-coder:14b'
+```
+
+For model-aware status, call `check_quota({ agent: 'agy', model: 'claude-sonnet-5-5' })`. Read the MCP result envelope's `structuredContent` or text block; do not assume a bare object. Route thresholds use remaining percent; `check_quota.thresholdPercent` is a separate used-percent health threshold.
+
+Quota waiting uses a 20% primary threshold by default. Add `--wait-for-quota --max-quota-wait 3600` to wait up to an hour; in library/MCP options use `quotaPolicy: { minRemainingPercent: 20, waitForReset: true, maxWaitMs: 3_600_000 }`. Poll dispatched runs with waits capped at 30 seconds. Keep the CLI or bridge process running while waiting; cancellation stops the wait, and waits do not resume after a process restart.
 
 ## Handling results and errors
 
@@ -297,8 +286,8 @@ If you have shell execution access, you can run high-level orchestration workflo
 
 ## Provider & Adapter Safety Guarantees (Phase 4 Hardening)
 
-- **Strict Permission & Tool Sandboxing Across All Providers:**
-  All providers (`cursor`, `gemini`, `devin`, `grok`, `acp`) strictly validate requested options. Passing unsupported parameters (e.g. attempting session fork on ephemeral endpoints, or passing images to text-only drivers) throws `AgentError('BAD_OPTION')` immediately rather than silently failing. In `read-only` or `plan` modes, explicit prompt guardrails and tool exclusion prevent code mutations.
+- **Harness-specific permission requests:** AgentBridge applies provider-native flags, modes, tool filters, or prompt guardrails as available. A `read-only` or `plan` request on a generic CLI adapter is not necessarily an OS-level sandbox and does not guarantee that provider configuration, hooks, MCP servers, or subprocesses cannot cause side effects. See [Harness validation](../../docs/HARNESS_VALIDATION.md) for provider-specific behavior and verification scope.
+- **Unsupported options:** Adapter-specific unsupported parameters (such as session fork for ephemeral endpoints or images for text-only drivers) are rejected with `AgentError('BAD_OPTION')` where implemented. See [Harness validation](../../docs/HARNESS_VALIDATION.md) for provider-specific compatibility notes.
 - **Abort & Timeout Propagation:**
   All adapters check child-process timeout (`r.timedOut`) and abort cancellation (`r.aborted`) after waiting, cleanly raising `TIMEOUT` and `ABORTED` with partial output preserved for telemetry.
 - **DAG Pipeline Integrity:**
@@ -317,7 +306,7 @@ If you have shell execution access, you can run high-level orchestration workflo
 - **Fallback Session Continuity & Effective Agent Attribution:**
   When a requested agent triggers a fallback to an alternative model or agent, telemetry and persistent sessions are indexed under `effectiveAgent`. Subsequent continuation requests on the same session key cleanly resume on the effective agent that actually holds the conversational state, preventing mismatched CLI session errors.
 - **Multi-Window Proactive Quota & Account Health:**
-  `ab account quota` inspects both primary windows (5h/session) and secondary windows (7d/weekly for Codex and Claude). Accounts reaching >= 95% on weekly allocations are flagged as throttled (`blockingWindow: 'secondary'`) and placed into cooldown within account pools. Network errors or missing tokens are clearly reported as `error` or `unknown`, never falsified as 0% used.
+  `ab account quota` inspects both primary windows (5h/session) and secondary windows (7d/weekly for Codex and Claude). Provider health uses a 95% primary threshold; Claude weekly health uses 98%, while Codex weekly follows the configured health threshold. The newer `quotaPolicy` route gate has its own requested primary remaining-percent threshold and treats an exhausted known secondary window as blocking. Network errors or missing tokens are clearly reported as `error` or `unknown`, never falsified as 0% used.
 
 ## Storage, Memory & UI Security Guarantees (Phase 6 Hardening)
 
