@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { validateOptions } from '../dist/index.js';
@@ -11,6 +11,7 @@ import { Budget } from '../dist/extras/budget.js';
 import { BUILTIN } from '../dist/adapters/endpoint.js';
 import { SubagentRoster } from '../dist/bridge/subagent-roster.js';
 import { mcpConfigFor } from '../dist/bridge/attach.js';
+import claudeAdapter from '../dist/adapters/claude.js';
 
 test('A31: validateOptions accepts writableRoots and validates fallbackOn', () => {
   const o = validateOptions({
@@ -20,6 +21,41 @@ test('A31: validateOptions accepts writableRoots and validates fallbackOn', () =
   });
   assert.deepEqual(o.writableRoots, ['/tmp/allowed']);
   assert.deepEqual(o.fallbackOn, ['TIMEOUT', 'AGENT_FAILED']);
+});
+
+test('Claude non-full permissions reject both allowed-tools aliases while full preserves extraArgs', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'ab-claude-extraargs-'));
+  const bin = path.join(dir, 'bin');
+  const capture = path.join(dir, 'args.json');
+  mkdirSync(bin);
+  const script = `require('node:fs').writeFileSync(process.env.CAPTURE_ARGS, JSON.stringify(process.argv.slice(2))); console.log(JSON.stringify({type:'result',result:'ok'}));\n`;
+  writeFileSync(path.join(bin, 'fake-claude.js'), script);
+  if (process.platform === 'win32') {
+    writeFileSync(path.join(bin, 'claude.cmd'), '@"%~dp0fake-claude.js" %*\r\n');
+  } else {
+    const cli = path.join(bin, 'claude');
+    writeFileSync(cli, `#!/bin/sh\n"${process.execPath}" "${path.join(bin, 'fake-claude.js')}" "$@"\n`);
+    chmodSync(cli, 0o755);
+  }
+  const env = { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH || ''}`, CAPTURE_ARGS: capture };
+  if (process.platform === 'win32') env.Path = env.PATH;
+  try {
+    for (const permissions of ['read-only', 'edit', 'plan']) {
+      await assert.rejects(
+        async () => {
+          for await (const _event of claudeAdapter.run({ prompt: 'test', cwd: dir, env, permissions, extraArgs: ['--allowed-tools', 'Bash'] })) {}
+        },
+        { code: 'BAD_OPTION' },
+        `${permissions} must reject --allowed-tools`
+      );
+    }
+    assert.equal(existsSync(capture), false, 'restricted runs must reject before starting the fake CLI');
+    for await (const _event of claudeAdapter.run({ prompt: 'test', cwd: dir, env, permissions: 'full', extraArgs: ['--allowed-tools', 'Bash'] })) {}
+    assert.ok(JSON.parse(readFileSync(capture, 'utf8')).includes('--allowed-tools'));
+    assert.ok(JSON.parse(readFileSync(capture, 'utf8')).includes('Bash'));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('A43: validateSchema prevents prototype pollution and cyclic self-referential refs', () => {
@@ -221,12 +257,10 @@ if (dump) writeFileSync(dump, JSON.stringify(args))
 if (mode === 'happy') {
   const nl = String.fromCharCode(10)
   const line = (o) => process.stdout.write(JSON.stringify(o) + nl)
-  line({ type: 'session', id: 's1' })
-  line({ type: 'message', delta: 'Hello ' })
-  line({ type: 'message', content: 'World ' })
-  line({ type: 'tool_call', name: 'read_file', params: { path: 'a.ts' } })
-  line({ type: 'usage', input: 3, output: 4, cost: 0.02 })
-  process.stdout.write('plain trailing line' + nl)
+  line({ type: 'system', subtype: 'init', session_id: 's1' })
+  line({ type: 'tool_call', subtype: 'started', tool_call: { readToolCall: { args: { path: 'a.ts' } } }, session_id: 's1' })
+  line({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'Hello world' }] }, session_id: 's1' })
+  line({ type: 'result', subtype: 'success', result: 'Hello world', session_id: 's1' })
 } else if (mode === 'auth') {
   process.stderr.write('error: unauthorized')
   process.exit(1)
@@ -236,9 +270,9 @@ if (mode === 'happy') {
 `
   );
   if (process.platform === 'win32') {
-    writeFileSync(path.join(dir, 'cursor.cmd'), '@echo off\r\n"' + node + '" "%~dp0fake-cursor.mjs" %*\r\n');
+    writeFileSync(path.join(dir, 'cursor-agent.cmd'), '@echo off\r\n"' + node + '" "%~dp0fake-cursor.mjs" %*\r\n');
   } else {
-    const sh = path.join(dir, 'cursor');
+    const sh = path.join(dir, 'cursor-agent');
     writeFileSync(sh, '#!/bin/sh\n"' + node + '" "' + path.join(dir, 'fake-cursor.mjs') + '" "$@"\n');
     chmodSync(sh, 0o755);
   }
@@ -260,20 +294,20 @@ if (mode === 'happy') {
     const dumpFile = path.join(dir, 'args.json');
     const { events, result } = await drain({ model: 'gpt-5.3-codex', extraArgs: ['--fake-mode', 'happy', '--fake-args-file', dumpFile] });
     assert.deepEqual(JSON.parse(readFileSync(dumpFile, 'utf8')), [
-      'agent', '--output-format', 'json', '--model', 'gpt-5.3-codex', '--fake-mode', 'happy', '--fake-args-file', dumpFile,
-      '--prompt', '[READ-ONLY MODE: Do NOT edit files or run modifying commands]\n\ntest prompt',
+      '--print', '--output-format', 'stream-json', '--model', 'gpt-5.3-codex', '--mode', 'ask', '--fake-mode', 'happy', '--fake-args-file', dumpFile,
+      '--', '[READ-ONLY MODE: Do NOT edit files or run modifying commands]\n\ntest prompt',
     ]);
-    assert.equal(events.filter((e) => e.type === 'raw').length, 5);
-    assert.deepEqual(events.filter((e) => e.type === 'text').map((e) => e.delta), ['Hello ', 'World ', 'plain trailing line\n']);
+    assert.equal(events.filter((e) => e.type === 'raw').length, 4);
+    assert.deepEqual(events.filter((e) => e.type === 'text').map((e) => e.delta), ['Hello world']);
     assert.deepEqual(events.find((e) => e.type === 'session'), { type: 'session', id: 's1' });
-    assert.deepEqual(events.find((e) => e.type === 'tool'), { type: 'tool', name: 'read_file', input: { path: 'a.ts' } });
-    assert.deepEqual(events.find((e) => e.type === 'usage'), { type: 'usage', input: 3, output: 4 });
-    assert.deepEqual(result.usage, { input: 3, output: 4, cost: 0.02 });
+    assert.deepEqual(events.find((e) => e.type === 'tool'), { type: 'tool', name: 'readToolCall', input: { path: 'a.ts' } });
+    assert.equal(events.find((e) => e.type === 'usage'), undefined);
+    assert.deepEqual(result.usage, { input: 0, output: 0, cost: null });
     assert.equal(result.sessionId, 's1');
     assert.equal(result.model, 'gpt-5.3-codex');
     assert.equal(result.exitCode, 0);
     assert.equal(result.timedOut, false);
-    assert.equal(result.text, 'Hello World plain trailing line');
+    assert.equal(result.text, 'Hello world');
 
     // default result model when o.model is unset
     const { result: r2 } = await drain({ extraArgs: ['--fake-mode', 'happy'] });

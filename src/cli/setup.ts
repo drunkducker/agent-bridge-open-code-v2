@@ -8,6 +8,7 @@ import { runCollect, resolveBinary } from '../core/spawn.js';
 import { findBinary as findAgy } from '../adapters/agy.js';
 import { findBinary as findPi } from '../adapters/pi.js';
 import { cmdInstall, cmdEndpoint, writeSkill } from './install.js';
+import { UsageError } from './args.js';
 import { doctor } from '../extras/doctor.js';
 
 import { existsSync, copyFileSync, mkdirSync } from 'node:fs';
@@ -308,6 +309,22 @@ export async function cmdSetup(
   flags: Record<string, any>,
   io: { out: (msg: any) => void; err: (msg: any) => void }
 ): Promise<void> {
+  if (flags.scope != null && !['user', 'project', 'local'].includes(flags.scope)) {
+    throw new UsageError('--scope must be user|project|local');
+  }
+  if (flags.permissions != null && !['read-only', 'plan', 'edit', 'full'].includes(flags.permissions)) {
+    throw new UsageError('--permissions must be read-only|plan|edit|full');
+  }
+  const hasTimeout = Object.prototype.hasOwnProperty.call(flags, 'timeout');
+  const timeout = hasTimeout ? flags.timeout : 300;
+  if (hasTimeout) {
+    if (typeof timeout !== 'string' && typeof timeout !== 'number') {
+      throw new UsageError('--timeout must be a finite positive number');
+    }
+    const value = Number(timeout);
+    if (!Number.isFinite(value) || value <= 0) throw new UsageError('--timeout must be a finite positive number');
+  }
+
   const c = getColors();
   printHeader(c, io);
 
@@ -318,7 +335,7 @@ export async function cmdSetup(
   const isInteractive = Boolean(process.stdin.isTTY && !flags.yes && !flags['non-interactive']);
 
   let targets: string[] = [];
-  let scope: 'user' | 'project' = 'user';
+  let scope: 'user' | 'project' | 'local' = 'user';
   let permissions: 'read-only' | 'plan' | 'edit' | 'full' = 'full';
   let installSkill = true;
   let autoApproveCodex = true;
@@ -530,8 +547,8 @@ export async function cmdSetup(
   } else {
     // Non-interactive mode (flags or piped)
     targets = flags.agent ? [flags.agent] : installedNames;
-    scope = flags.scope === 'project' ? 'project' : 'user';
-    permissions = (['read-only', 'plan', 'edit', 'full'].includes(flags.permissions) ? flags.permissions : 'full') as any;
+    scope = flags.scope || 'user';
+    permissions = (flags.permissions || 'full') as any;
     installSkill = flags['no-skill'] !== true;
     autoApproveCodex = flags['auto-approve'] !== false;
     runDoctorAtEnd = false;
@@ -551,7 +568,7 @@ export async function cmdSetup(
     permissions,
     'no-skill': !installSkill,
     'auto-approve': autoApproveCodex,
-    timeout: flags.timeout ? Number(flags.timeout) : 300,
+    timeout: Number(timeout),
     ...(flags.cwd ? { cwd: targetCwd } : {}),
   };
 

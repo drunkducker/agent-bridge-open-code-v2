@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { spawnProc, ProcessHandle } from '../core/spawn.js';
 import { AgentError } from '../core/errors.js';
 import { ev, parseJsonLine } from '../core/events.js';
@@ -92,6 +93,29 @@ export interface ActiveTurnContext {
   aborted?: boolean;
 }
 
+function failureFromSignal(signal: AbortSignal, message: string): AgentError {
+  return signal.reason instanceof AgentError
+    ? signal.reason
+    : new AgentError('ABORTED', message, { agent: 'codex' });
+}
+
+function awaitWithSignal<T>(promise: Promise<T>, signal: AbortSignal, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    if (signal.aborted) { reject(failureFromSignal(signal, message)); return; }
+    let settled = false;
+    const cleanup = () => signal.removeEventListener('abort', onAbort);
+    const finish = (fn: (value: any) => void, value: any) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      fn(value);
+    };
+    const onAbort = () => finish(reject, failureFromSignal(signal, message));
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then((value) => finish(resolve, value), (error) => finish(reject, error));
+  });
+}
+
 export class CodexAppServerDaemon {
   readonly cwd: string;
   readonly envExtra?: Record<string, string>;
@@ -181,7 +205,7 @@ export class CodexAppServerDaemon {
       let timer: NodeJS.Timeout | undefined;
       const onAbort = () => {
         cleanup();
-        reject(new AgentError('ABORTED', `Codex RPC "${method}" aborted`, { agent: 'codex' }));
+        reject(opts.signal ? failureFromSignal(opts.signal, `Codex RPC "${method}" aborted`) : new AgentError('ABORTED', `Codex RPC "${method}" aborted`, { agent: 'codex' }));
       };
       const cleanup = () => {
         this.pendingRequests.delete(id);
@@ -190,7 +214,7 @@ export class CodexAppServerDaemon {
       };
 
       if (opts.signal?.aborted) {
-        return reject(new AgentError('ABORTED', `Codex RPC "${method}" aborted`, { agent: 'codex' }));
+        return reject(failureFromSignal(opts.signal, `Codex RPC "${method}" aborted`));
       }
       if (opts.signal) opts.signal.addEventListener('abort', onAbort, { once: true });
 
@@ -404,6 +428,28 @@ export class CodexAppServerDaemon {
       throw new AgentError('ABORTED', 'Codex turn aborted before starting', { agent: 'codex' });
     }
 
+    const runAbort = new AbortController();
+    const relayCallerAbort = () => runAbort.abort(new AgentError('ABORTED', 'Codex turn aborted', { agent: 'codex' }));
+    o.signal?.addEventListener('abort', relayCallerAbort, { once: true });
+    const deadline = o.timeoutMs && o.timeoutMs > 0 ? t0 + o.timeoutMs : null;
+    let timeoutTimer: NodeJS.Timeout | undefined;
+    if (deadline !== null) {
+      timeoutTimer = setTimeout(() => {
+        runAbort.abort(new AgentError('TIMEOUT', `Codex turn timed out after ${o.timeoutMs}ms`, { agent: 'codex', timedOut: true }));
+      }, Math.max(0, deadline - Date.now()));
+      timeoutTimer.unref();
+    }
+    const signal = runAbort.signal;
+    const expireDeadline = () => {
+      if (deadline !== null && Date.now() >= deadline && !signal.aborted) {
+        runAbort.abort(new AgentError('TIMEOUT', `Codex turn timed out after ${o.timeoutMs}ms`, { agent: 'codex', timedOut: true }));
+      }
+    };
+    const throwIfAborted = () => {
+      expireDeadline();
+      if (signal.aborted) throw failureFromSignal(signal, 'Codex turn aborted');
+    };
+
     // A03: Serialize turns on this daemon instance to prevent activeTurn overwrite
     let releaseLock!: () => void;
     const currentLock = new Promise<void>((resolve) => {
@@ -414,18 +460,19 @@ export class CodexAppServerDaemon {
       () => currentLock,
       () => currentLock
     );
-    await waitPrevious;
 
+    let acquired = false;
+    let ownTurnCtx: ActiveTurnContext | undefined;
+    let abortListener: (() => void) | undefined;
     try {
-      if (o.signal?.aborted) {
-        throw new AgentError('ABORTED', 'Codex turn aborted before startup', { agent: 'codex' });
-      }
+      throwIfAborted();
+      await awaitWithSignal(waitPrevious, signal, 'Codex turn aborted while queued');
+      acquired = true;
+      throwIfAborted();
 
-      await this.ensureStarted(o.env, o.signal);
+      await this.ensureStarted(o.env, signal);
 
-      if (o.signal?.aborted) {
-        throw new AgentError('ABORTED', 'Codex turn aborted after startup', { agent: 'codex' });
-      }
+      throwIfAborted();
 
       const queue = new AsyncQueue<AgentEvent>();
 
@@ -435,51 +482,28 @@ export class CodexAppServerDaemon {
         text: '',
         usage: { input: 0, output: 0 },
       };
+      ownTurnCtx = turnCtx;
       this.activeTurn = turnCtx;
 
       // Abort signal handling
-      let abortListener: (() => void) | undefined;
-      if (o.signal) {
-        abortListener = () => {
-          turnCtx.aborted = true;
-          if (turnCtx.turnId && turnCtx.threadId) {
-            this.sendRpc(
-              'turn/interrupt',
-              { threadId: turnCtx.threadId, turnId: turnCtx.turnId },
-              { timeoutMs: 5000 }
-            ).catch(() => {});
-          }
-          queue.fail(new AgentError('ABORTED', 'Codex turn aborted', { agent: 'codex' }));
-        };
-        if (o.signal.aborted) {
-          abortListener();
-        } else {
-          o.signal.addEventListener('abort', abortListener, { once: true });
-        }
-      }
-
-      // Timeout handling
-      let timeoutTimer: NodeJS.Timeout | undefined;
-      if (o.timeoutMs) {
-        timeoutTimer = setTimeout(() => {
-          if (turnCtx.turnId && turnCtx.threadId) {
-            this.sendRpc(
-              'turn/interrupt',
-              { threadId: turnCtx.threadId, turnId: turnCtx.turnId },
-              { timeoutMs: 5000 }
-            ).catch(() => {});
-          }
-          queue.fail(
-            new AgentError('TIMEOUT', `Codex turn timed out after ${o.timeoutMs}ms`, {
-              agent: 'codex',
-              timedOut: true,
-            })
-          );
-        }, o.timeoutMs);
-        timeoutTimer.unref();
-      }
+      let interruptSent = false;
+      let turnStartInFlight = false;
+      const interruptTurn = () => {
+        if (interruptSent || !turnCtx?.turnId || !turnCtx.threadId) return;
+        interruptSent = true;
+        this.sendRpc('turn/interrupt', { threadId: turnCtx.threadId, turnId: turnCtx.turnId }, { timeoutMs: 5000 }).catch(() => {});
+      };
+      abortListener = () => {
+        if (turnCtx) turnCtx.aborted = true;
+        if (turnStartInFlight && !turnCtx.turnId) this.close();
+        interruptTurn();
+        queue.fail(failureFromSignal(signal, 'Codex turn aborted'));
+      };
+      if (signal.aborted) abortListener();
+      else signal.addEventListener('abort', abortListener, { once: true });
 
       try {
+        throwIfAborted();
         // Manage Thread: new / continue / fork / ephemeral
         const sessionMode = o.session?.mode || 'new';
         let threadId = this.activeThreadId;
@@ -488,7 +512,8 @@ export class CodexAppServerDaemon {
           threadId = o.session.id;
           this.activeThreadId = threadId;
         } else if (sessionMode === 'fork' && o.session?.id) {
-          const forkRes = await this.sendRpc('thread/fork', { threadId: o.session.id }, { signal: o.signal });
+          const forkRes = await this.sendRpc('thread/fork', { threadId: o.session.id }, { signal });
+          throwIfAborted();
           threadId = forkRes?.thread?.id || forkRes?.threadId;
           this.activeThreadId = threadId;
           if (threadId) yield ev.session(threadId);
@@ -504,8 +529,9 @@ export class CodexAppServerDaemon {
               developerInstructions: o.systemPrompt || null,
               ephemeral: sessionMode === 'ephemeral',
             },
-            { signal: o.signal }
+            { signal }
           );
+          throwIfAborted();
           threadId = startRes?.thread?.id || startRes?.threadId;
           this.activeThreadId = threadId;
           if (threadId && sessionMode !== 'ephemeral') {
@@ -515,9 +541,7 @@ export class CodexAppServerDaemon {
 
         turnCtx.threadId = threadId;
 
-        if (o.signal?.aborted) {
-          throw new AgentError('ABORTED', 'Codex turn aborted before turn start', { agent: 'codex' });
-        }
+        throwIfAborted();
 
         // A59: Support input text and multimodal images
         const turnInput: any[] = [{ type: 'text', text: o.prompt }];
@@ -542,8 +566,18 @@ export class CodexAppServerDaemon {
         if (o.effort) turnParams.effort = EFFORT[o.effort];
         if (o.jsonSchema) turnParams.outputSchema = o.jsonSchema;
 
-        const turnRes = await this.sendRpc('turn/start', turnParams, { signal: o.signal });
+        turnStartInFlight = true;
+        let turnRes: any;
+        try {
+          turnRes = await this.sendRpc('turn/start', turnParams, { signal });
+        } finally {
+          turnStartInFlight = false;
+        }
         turnCtx.turnId = turnRes?.turn?.id || turnRes?.turnId;
+        if (signal.aborted) {
+          interruptTurn();
+          throwIfAborted();
+        }
 
         // Stream events from queue to caller
         for await (const event of queue) {
@@ -565,13 +599,16 @@ export class CodexAppServerDaemon {
           transport: 'app-server',
         };
       } finally {
-        if (timeoutTimer) clearTimeout(timeoutTimer);
-        if (o.signal && abortListener) o.signal.removeEventListener('abort', abortListener);
+        if (abortListener) signal.removeEventListener('abort', abortListener);
       }
     } finally {
+      if (timeoutTimer) clearTimeout(timeoutTimer);
+      o.signal?.removeEventListener('abort', relayCallerAbort);
       releaseLock();
-      this.activeTurn = undefined;
-      this.refreshIdleTimer();
+      if (acquired) {
+        if (this.activeTurn === ownTurnCtx) this.activeTurn = undefined;
+        this.refreshIdleTimer();
+      }
     }
   }
 
@@ -589,11 +626,21 @@ export class CodexAppServerDaemon {
 }
 
 function getDaemonPoolKey(cwd: string, env?: Record<string, string>): string {
-  const resolvedCwd = path.resolve(cwd || process.cwd()).toLowerCase();
-  const codexHome = env?.CODEX_HOME || process.env.CODEX_HOME || '';
-  const apiKey = env?.OPENAI_API_KEY || env?.CODEX_API_KEY || process.env.OPENAI_API_KEY || '';
-  const acct = env?.AGENTBRIDGE_ACCOUNT_NAME || '';
-  return `${resolvedCwd}::${codexHome}::${acct}::${apiKey ? apiKey.slice(-8) : ''}`;
+  const resolvedCwd = path.resolve(cwd || process.cwd());
+  const cwdKey = process.platform === 'win32' ? resolvedCwd.toLowerCase() : resolvedCwd;
+  const codexHome = env?.CODEX_HOME ?? process.env.CODEX_HOME ?? '';
+  const resolvedCodexHome = codexHome ? path.resolve(cwd || process.cwd(), codexHome) : '';
+  const codexHomeKey = process.platform === 'win32' ? resolvedCodexHome.toLowerCase() : resolvedCodexHome;
+  // ensureStarted strips inherited API keys, so only explicit keys participate in the effective daemon env.
+  // Fingerprint them together with endpoint overrides; never retain secret values in the pool key.
+  const credentialFingerprint = createHash('sha256').update(JSON.stringify([
+    env?.OPENAI_API_KEY || '',
+    env?.CODEX_API_KEY || '',
+  ])).digest('hex');
+  const endpoint = env?.OPENAI_BASE_URL ?? process.env.OPENAI_BASE_URL ?? '';
+  const codexEndpoint = env?.CODEX_BASE_URL ?? process.env.CODEX_BASE_URL ?? '';
+  const acct = env?.AGENTBRIDGE_ACCOUNT_NAME ?? process.env.AGENTBRIDGE_ACCOUNT_NAME ?? '';
+  return JSON.stringify([cwdKey, codexHomeKey, acct, endpoint, codexEndpoint, credentialFingerprint]);
 }
 
 /** Global Daemon Pool indexed by resolved workspace path and effective account environment */

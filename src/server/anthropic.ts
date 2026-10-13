@@ -21,6 +21,7 @@ import {
   sseStart,
   sseData,
   clientAbort,
+  assertClientActive,
   contentText,
   est,
   readParams,
@@ -44,6 +45,7 @@ export function anthropicError(e: HttpError) {
 }
 
 function finishErr(res: any, e: HttpError, started: boolean) {
+  if (res.destroyed) return;
   if (!started)
     return sendJson(
       res,
@@ -100,6 +102,7 @@ function prep(body: any, opts: any = {}, req?: any) {
     incremental: incrementalPrompt(turns),
     systemPrompt: joinSystem(sys, [], target.mode),
     effort: r.effort,
+    quotaPolicy: opts.quotaPolicy,
     turns,
     sysText: sys.join('\n'),
     tools,
@@ -112,11 +115,13 @@ function prep(body: any, opts: any = {}, req?: any) {
 }
 
 async function messages(req: any, res: any, opts: any) {
+  const signal = clientAbort(res);
   const body = await readJson(req);
+  assertClientActive(signal);
   if (!Number.isInteger(body.max_tokens) || body.max_tokens < 1)
     throw new HttpError(400, 'max_tokens: Field required (positive integer)', 'invalid_request_error');
-  const p = await attachImages(prep(body, opts, req), body);
-  const signal = clientAbort(res);
+  const p = await attachImages(prep(body, opts, req), body, { signal });
+  assertClientActive(signal);
   const ag = withAgentMode(
     {
       target: p.target,
@@ -130,6 +135,7 @@ async function messages(req: any, res: any, opts: any) {
       mode: p.target.mode,
       signal,
       timeoutMs: opts.timeoutMs,
+      quotaPolicy: p.quotaPolicy,
       fallback: opts.fallback,
       pool: opts.pool,
       stats: opts.stats,

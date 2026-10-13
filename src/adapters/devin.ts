@@ -11,14 +11,13 @@ const adapter = cliJsonLinesAdapter({
   models: MODELS,
   defaultModel: 'devin-default',
   buildArgs(o, prompt) {
-    // Devin takes no model flag: the CLI picks its own model per login/plan.
-    const args: string[] = ['run', '--json']
-    if (o.permissions === 'full') args.push('--permission-mode', 'bypass')
-    if (o.cwd) args.push('--cwd', o.cwd)
+    const args: string[] = ['--permission-mode', o.permissions === 'full' ? 'dangerous' : 'normal']
     if (o.extraArgs?.length) args.push(...o.extraArgs.map(String))
-    args.push('-p', prompt)
+    args.push('-p', '--', prompt)
     return args
   },
+  plainText: true,
+  unsupportedSystemPrompt: true,
   authRe: /auth|login|token/i,
   authMessage: (blob) => `Devin CLI authentication missing: ${blob}`,
 })

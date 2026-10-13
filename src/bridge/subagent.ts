@@ -3,6 +3,7 @@ import { run } from '../index.js';
 import { mcpConfigFor } from './attach.js';
 import { verifyAttestation, serveHttp, Attestation } from './mcp.js';
 import { AgentEvent, RunResult, EventTool } from '../types/index.js';
+import { AgentError } from '../core/errors.js';
 
 const str = (o: any) =>
   o === undefined || typeof o === 'string'
@@ -136,6 +137,8 @@ async function runOnce({
   root,
   ...rest
 }: SubagentOptions): Promise<SubagentResult> {
+  const inheritedEnv = { ...process.env, ...(rest.env || {}) };
+  const subdelegation = inheritedEnv.AGENTBRIDGE_SUBDELEGATION !== 'false';
   const bind = randomBytes(12).toString('hex');
   const seen = new Set<string>();
   const tool = toolName || `ask_${callee}`;
@@ -149,6 +152,7 @@ async function runOnce({
     const grandchildEnv: Record<string, string> = {
       AGENTBRIDGE_DEPTH: String(depth),
       AGENTBRIDGE_PERMS: permissions,
+      AGENTBRIDGE_SUBDELEGATION: String(subdelegation),
       AGENTBRIDGE_ATTEST_KEY: attestKey,
       AGENTBRIDGE_ATTEST_BIND: bind,
     };
@@ -166,6 +170,8 @@ async function runOnce({
       `mcp_servers.${serverName}.bearer_token_env_var="AGENTBRIDGE_ATTEST_KEY"`,
       '-c',
       `mcp_servers.${serverName}.default_tools_approval_mode="approve"`,
+      '-c',
+      `mcp_servers.${serverName}.tool_timeout_sec=300`,
     ];
   } else {
     mcp = mcpConfigFor(caller, {
@@ -177,6 +183,7 @@ async function runOnce({
       attestBind: bind,
       root,
       childCwd,
+      subdelegation,
     });
   }
   const it = run(caller, {
@@ -192,6 +199,7 @@ async function runOnce({
       AGENTBRIDGE_PERMS: permissions,
       AGENTBRIDGE_ATTEST_KEY: attestKey,
       ...(rest.env || {}),
+      AGENTBRIDGE_SUBDELEGATION: String(subdelegation),
     },
     mcpServers: { ...mcp, ...(rest.mcpServers || {}) },
   });
@@ -263,6 +271,10 @@ async function runOnce({
  * delegated tool call succeeded and was attested. Such runs are retried once with a fresh key/bind.
  */
 export async function runAsSubagent(opts: SubagentOptions): Promise<SubagentResult> {
+  const inheritedEnv = { ...process.env, ...(opts.env || {}) };
+  if (inheritedEnv.AGENTBRIDGE_SUBDELEGATION === 'false') {
+    throw new AgentError('BAD_OPTION', 'subdelegation is disabled by AGENTBRIDGE_SUBDELEGATION=false');
+  }
   const maxAttempts = opts.maxAttempts ?? 2;
   let r!: SubagentResult;
   let attempts = 0;

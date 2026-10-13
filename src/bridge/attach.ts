@@ -134,6 +134,7 @@ export interface McpConfigOptions {
   root?: string;
   childCwd?: string;
   defaultTimeoutS?: number | string;
+  subdelegation?: boolean;
 }
 
 export interface McpConfigResult {
@@ -150,12 +151,16 @@ export interface McpConfigResult {
  * `models` = { callee: model } is enforced server-side (AGENTBRIDGE_MODEL_<CALLEE>), so it cannot be dropped by the calling LLM.
  */
 export function mcpConfigFor(callerAgent: string, opts: McpConfigOptions = {}): McpConfigResult {
-  const { depth = 0, maxDepth, permissions = 'full', models = {}, home, attestBind, root, childCwd, defaultTimeoutS } = opts;
+  const { depth = 0, maxDepth, permissions = 'full', models = {}, home, attestBind, root, childCwd, defaultTimeoutS, subdelegation = true } = opts;
   const KNOWN_AGENTS = ['claude', 'codex', 'opencode', 'agy', 'pi', 'cursor', 'gemini', 'devin', 'grok', 'acp'];
   if (!KNOWN_AGENTS.includes(callerAgent)) {
     return {};
   }
-  const env: Record<string, string> = { AGENTBRIDGE_DEPTH: String(depth), AGENTBRIDGE_PERMS: permissions };
+  const env: Record<string, string> = {
+    AGENTBRIDGE_DEPTH: String(depth),
+    AGENTBRIDGE_PERMS: permissions,
+    AGENTBRIDGE_SUBDELEGATION: String(subdelegation),
+  };
   if (maxDepth != null) env.AGENTBRIDGE_MAX_DEPTH = String(maxDepth);
   for (const [a, m] of Object.entries(models)) {
     if (m) env[`AGENTBRIDGE_MODEL_${a.toUpperCase()}`] = m;

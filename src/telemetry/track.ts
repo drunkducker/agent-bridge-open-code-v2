@@ -46,7 +46,7 @@ export async function* runWithTelemetry(
   if (startSid) {
     const pol = policyOf(startSid);
     if (pol.hard != null && pol.hardAction !== 'none') {
-      const c = contextOf(startSid, { agent: name, env, windows: tele.windows });
+      const c = contextOf(startSid, { agent: name, env, windows: tele.windows, refresh: true });
       if (c && evaluate(c, pol).level === 'hard') {
         if (pol.hardAction === 'handoff' && pol.handoffTo) {
           const h = await handoff(startSid, pol.handoffTo, { agent: name, env, cwd: o.cwd });
@@ -109,7 +109,7 @@ export async function* runWithTelemetry(
   try {
     const who = result.fallback?.used || name; // a fallback answered: the session (and its context window) belongs to that agent
     const sid = result.sessionId || tr.rec.sessionId;
-    const c = sid && o.session?.mode !== 'ephemeral' ? contextOf(sid, { agent: who, env, windows: tele.windows }) : null;
+    const c = sid && o.session?.mode !== 'ephemeral' ? contextOf(sid, { agent: who, env, windows: tele.windows, refresh: true }) : null;
     if (c) {
       tel.context = c;
       const pol = getPolicy(who, sid, env, tele.policy);

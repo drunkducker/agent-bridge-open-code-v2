@@ -15,6 +15,8 @@ import {
   race,
   doctor,
   loadConfig,
+  parseFallbackTarget,
+  supportsProactiveQuota,
 } from '../index.js';
 import { runBudgeted, Budget } from '../extras/budget.js';
 import { runInWorktree, withWorktree } from '../extras/worktree.js';
@@ -43,7 +45,52 @@ async function promptFrom(_: string[], flags: Record<string, any>): Promise<stri
 
 const cliGen = (agent: any, opts: any) => runTracked(agent, opts, { origin: 'cli' });
 
-function baseOpts(flags: Record<string, any>, prompt: string): RunOptions {
+function fallbackTargetsFromFlags(flags: Record<string, any>): RunOptions['fallback'] {
+  if (flags.fallback == null) return undefined;
+  const values = String(flags.fallback).split(',').map((x) => x.trim()).filter(Boolean);
+  if (values.length > 5) throw new UsageError('--fallback accepts at most 5 agents');
+  return values.map((entry) => {
+    let target: any;
+    try {
+      target = parseFallbackTarget(entry);
+    } catch (e: any) {
+      if (e?.code === 'BAD_OPTION') throw new UsageError(e.message);
+      throw e;
+    }
+    checkAgent(target.agent);
+    if (target.minRemainingPercent !== undefined && !supportsProactiveQuota(target.agent))
+      throw new UsageError(`Quota thresholds are unavailable for fallback agent "${target.agent}"`);
+    return target;
+  });
+}
+
+function quotaPolicyFromFlags(flags: Record<string, any>, fallback: RunOptions['fallback'] = []): RunOptions['quotaPolicy'] {
+  const quotaNumber = (key: string) => {
+    if (typeof flags[key] !== 'string' || !flags[key].trim())
+      throw new UsageError(`--${key} must be a non-empty number`);
+    return num(flags, key, { min: 0 });
+  };
+  const hasThreshold = flags['min-remaining-percent'] != null;
+  const waitForQuota = flags['wait-for-quota'] === true;
+  const hasRouteThreshold = (fallback || []).some((target: any) => target?.minRemainingPercent !== undefined);
+  if (!hasThreshold && !waitForQuota && !hasRouteThreshold) {
+    if (flags['max-quota-wait'] != null)
+      throw new UsageError('--max-quota-wait requires --wait-for-quota, --min-remaining-percent, or a fallback threshold such as --fallback codex@15');
+    return undefined;
+  }
+  const threshold = hasThreshold ? quotaNumber('min-remaining-percent') : 20;
+  if (threshold > 100) throw new UsageError('--min-remaining-percent must be between 0 and 100');
+  const maxWaitSeconds = flags['max-quota-wait'] != null ? quotaNumber('max-quota-wait') : undefined;
+  if (maxWaitSeconds === 0 || (maxWaitSeconds !== undefined && !Number.isFinite(maxWaitSeconds * 1000)))
+    throw new UsageError('--max-quota-wait must be a positive finite number of seconds');
+  return {
+    minRemainingPercent: threshold,
+    ...(waitForQuota ? { waitForReset: true } : {}),
+    ...(maxWaitSeconds !== undefined ? { maxWaitMs: maxWaitSeconds * 1000 } : {}),
+  };
+}
+
+function baseOpts(flags: Record<string, any>, prompt: string, fallbackTargets?: RunOptions['fallback']): RunOptions {
   const o: RunOptions = { prompt };
   if (flags.model) o.model = flags.model;
   if (flags.effort) o.effort = flags.effort;
@@ -53,10 +100,12 @@ function baseOpts(flags: Record<string, any>, prompt: string): RunOptions {
   if (flags.isolated !== undefined) o.isolated = Boolean(flags.isolated);
   if (flags.transport) o.transport = flags.transport;
   if (flags['app-server'] || flags.appServer) o.appServer = true;
+  if (flags.yolo) o.yolo = true;
   if (flags.cwd) o.cwd = flags.cwd;
   if (flags.timeout != null) o.timeoutMs = num(flags, 'timeout', { min: 0 }) * 1000;
   if (flags.system) o.systemPrompt = flags.system;
-  if (flags.fallback) o.fallback = String(flags.fallback).split(',').map((x) => x.trim()).filter(Boolean);
+  const parsedFallback = fallbackTargets ?? fallbackTargetsFromFlags(flags);
+  if (parsedFallback) o.fallback = parsedFallback;
   if (flags['fallback-on'])
     o.fallbackOn = String(flags['fallback-on']).split(',').map((x) => x.trim().toUpperCase()).filter(Boolean) as FallbackErrorCode[];
   if (flags['json-schema']) {
@@ -66,6 +115,7 @@ function baseOpts(flags: Record<string, any>, prompt: string): RunOptions {
       throw new UsageError('--json-schema must be valid JSON');
     }
   }
+  o.quotaPolicy = quotaPolicyFromFlags(flags, parsedFallback);
   if (flags.session) {
     const mode = flags.session;
     if (!['new', 'ephemeral', 'continue', 'fork'].includes(mode))
@@ -86,6 +136,24 @@ function budgetOf(flags: Record<string, any>) {
 }
 
 function printEvent(e: AgentEvent, json?: boolean) {
+  if (e.type === 'quota') {
+    const time = (n?: number) => {
+      if (!Number.isFinite(n)) return undefined;
+      const d = new Date(n!);
+      return Number.isNaN(d.getTime()) ? undefined : d.toISOString();
+    };
+    const routes = e.candidates?.map((c) => `${c.agent}${c.threshold == null ? '' : ` needs >=${c.threshold}%`}${c.remainingPercent == null ? ' (quota unknown)' : ` (currently ${c.remainingPercent}%)`}`)
+      ?? (e.remainingPercent == null ? [] : [`${e.agent} ${e.remainingPercent}% remaining`]);
+    const details = [
+      `default threshold ${e.threshold}%`,
+      ...(routes?.length ? [`routes: ${routes.join(', ')}`] : []),
+      ...(time(e.resetAt) ? [`reset ${time(e.resetAt)}`] : []),
+      ...(time(e.nextCheckAt) ? [`next check ${time(e.nextCheckAt)}`] : []),
+    ];
+    err(`[quota ${e.phase}] ${e.message} (${details.join('; ')})`);
+    if (json) out(JSON.stringify({ event: e }));
+    return;
+  }
   if (json) return out(JSON.stringify({ event: e }));
   if (e.type === 'session') err(`[session ${e.id}]`);
   else if (e.type === 'text') process.stdout.write(e.delta);
@@ -120,8 +188,18 @@ async function cmdRun(_: string[], flags: Record<string, any>, { askOnly = false
     promptArgs = [agent, ..._];
   }
   checkAgent(agent);
+  const fallbackTargets = fallbackTargetsFromFlags(flags);
+  if (flags.yolo) {
+    if (agent !== 'codex') throw new UsageError('--yolo is only available with the Codex agent');
+    if (flags.permissions !== 'full') throw new UsageError('--yolo requires explicit --permissions full');
+  }
+  if (flags['dangerously-skip-permissions']) {
+    if (agent !== 'claude') throw new UsageError('--dangerously-skip-permissions is only available with the Claude agent');
+    if (flags.permissions !== 'full') throw new UsageError('--dangerously-skip-permissions requires explicit --permissions full');
+  }
   const prompt = await promptFrom(promptArgs, flags);
-  let opts = baseOpts(flags, prompt);
+  let opts = baseOpts(flags, prompt, fallbackTargets);
+  if (flags['dangerously-skip-permissions']) opts.dangerouslySkipPermissions = true;
   const { getAccountEnv } = await import('../core/accounts.js');
   const accEnv = getAccountEnv(agent, flags.account);
   if (Object.keys(accEnv).length) {
@@ -129,7 +207,8 @@ async function cmdRun(_: string[], flags: Record<string, any>, { askOnly = false
   }
   const b = budgetOf(flags);
   const useWorktree = !!flags.worktree;
-  const runOne = (a: any, p: any) => runBudgeted(a, p, b, { gen: cliGen });
+  const onEvent = (e: AgentEvent) => { if (e.type === 'quota') printEvent(e); };
+  const runOne = (a: any, p: any) => runBudgeted(a, p, b, { gen: cliGen, onEvent });
   const exec = (a: any, p: any) => (useWorktree ? runInWorktree(a, p, { runOne }) : runOne(a, p));
 
   if (flags.stream && !askOnly) {
@@ -218,6 +297,7 @@ function targetsFrom(_: string[], flags: Record<string, any>) {
 }
 
 async function cmdFanoutRace(mode: 'fanout' | 'race', _: string[], flags: Record<string, any>) {
+  if (flags.yolo) throw new UsageError('--yolo is only available for a single Codex run');
   const prompt = _[0];
   if (!prompt) throw new UsageError('usage: ab fanout|race "<prompt>" agent[:model] ...');
   const targets = targetsFrom(_, flags);
@@ -385,6 +465,7 @@ async function cmdCancel(_: string[], flags: Record<string, any>) {
 }
 
 async function cmdServe(_: string[], flags: Record<string, any>) {
+  if (flags.yolo) throw new UsageError('--yolo is only available for a single Codex run');
   const { startProxy } = await import('../server/index.js');
   const p = await startProxy({
     port: flags.port ? num(flags, 'port', { min: 0, int: true }) : 8787,
@@ -397,7 +478,8 @@ async function cmdServe(_: string[], flags: Record<string, any>) {
     accounts: flags.accounts ? JSON.parse((await import('node:fs')).readFileSync(flags.accounts, 'utf8')) : undefined,
     acceptTosRisk: !!flags['accept-tos-risk'],
     logFile: flags.log,
-    ...(flags.fallback ? { fallback: String(flags.fallback).split(',').map((x) => x.trim()).filter(Boolean) } : {}),
+    quotaPolicy: quotaPolicyFromFlags(flags, fallbackTargetsFromFlags(flags)),
+    ...(flags.fallback ? { fallback: fallbackTargetsFromFlags(flags) } : {}),
   });
   err(`agentbridge proxy listening on ${p.url}`);
   const { readinessReport, installedAgents } = await import('../core/readiness.js');
@@ -489,7 +571,10 @@ const HELP = `agentbridge (ab) — drive local claude/codex/opencode/agy/pi/curs
   ab run <agent> [prompt|-] [--model][--effort][--permissions][--harness auto|claude|pi|none][--cwd][--timeout s]
                              [--session new|ephemeral|continue|fork][--session-id id]
                              [--system '<prompt>'][--json-schema '<json>'][--stream][--json]
-                             [--fallback a,b:model][--fallback-on RATE_LIMITED,TIMEOUT,...]   # next agent when this one is out of tokens
+                             [--fallback agent[@N][:model],...][--fallback-on RATE_LIMITED,TIMEOUT,...]
+                             [--min-remaining-percent 20][--wait-for-quota][--max-quota-wait seconds]
+                             [--dangerously-skip-permissions]  # Claude only; requires --permissions full
+                             [--yolo]  # Codex only; requires --permissions full
                              [--worktree][--max-cost][--max-tokens][--max-time s]
   ab ask <agent> [prompt|-] [same flags]           # prints only the result text
   ab fanout "<prompt>" agent[:model] ...           # run all, collect all
@@ -507,7 +592,7 @@ const HELP = `agentbridge (ab) — drive local claude/codex/opencode/agy/pi/curs
   ab context <session> [--agent a]
   ab handoff <session> --to <agent>
   ab watch <run> | ab wait <run> | ab cancel <run>
-  ab serve [--port][--host][--token][--allow-non-loopback][--fallback a,b:model][--config file.json][--agent-root DIR][--agent-max-permission edit|full][--accounts file.json --accept-tos-risk][--log file.jsonl]
+  ab serve [--port][--host][--token][--allow-non-loopback][--fallback a,b:model][--min-remaining-percent N][--wait-for-quota][--max-quota-wait seconds][--config file.json][--agent-root DIR][--agent-max-permission edit|full][--accounts file.json --accept-tos-risk][--log file.jsonl]
   ab ui [--port 8788][--open][--token t]            # live dashboard: runs, tokens, context, checkpoints, fallbacks
   ab bridge                                        # stdio MCP server
   ab doctor [--live][--json]

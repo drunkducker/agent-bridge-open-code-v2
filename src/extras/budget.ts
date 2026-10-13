@@ -90,6 +90,7 @@ export class Budget {
 }
 
 let seq = 0;
+const BUDGET_LIMIT_REACHED = Symbol('budget limit reached');
 
 /** Iterate an event generator to its return value, forwarding events. If onEvent throws, the
  *  unwound-on-error return() below still drives the generator's own finally clauses, so adapter
@@ -133,18 +134,50 @@ export async function runBudgeted(
     };
   const signal = opts.signal ? (AbortSignal as any).any([opts.signal, b.signal]) : b.signal;
   const t0 = Date.now();
+  let attempt = 0,
+    activeKey = key;
   let text = '',
     sessionId: string | null = null,
     usage: any = { input: 0, output: 0 };
+  const partialUsageByAttempt = new Map<string, { input: number; output: number; cost: number; hasCost: boolean }>();
+  const partialUsage = () => {
+    const total = { input: 0, output: 0, cost: 0, hasCost: false };
+    for (const u of partialUsageByAttempt.values()) {
+      total.input += u.input;
+      total.output += u.output;
+      total.cost += u.cost;
+      total.hasCost ||= u.hasCost;
+    }
+    return { input: total.input, output: total.output, ...(total.hasCost ? { cost: total.cost } : {}) };
+  };
   try {
     const r = await drain(gen(agent, { ...opts, signal }), (e: any) => {
       if (e.type === 'text') text += e.delta;
       else if (e.type === 'session') sessionId = e.id;
-      else if (e.type === 'usage') usage = { input: e.input, output: e.output, cost: e.cost };
-      b.track(key, e);
+      else if (e.type === 'usage') {
+        const prev = partialUsageByAttempt.get(activeKey) || { input: 0, output: 0, cost: 0, hasCost: false };
+        const next = e.incremental
+          ? {
+              input: prev.input + (e.input || 0),
+              output: prev.output + (e.output || 0),
+              cost: prev.cost + (e.cost || 0),
+              hasCost: prev.hasCost || typeof e.cost === 'number',
+            }
+          : {
+              input: e.input || 0,
+              output: e.output || 0,
+              cost: e.cost || 0,
+              hasCost: typeof e.cost === 'number',
+            };
+        partialUsageByAttempt.set(activeKey, next);
+        usage = partialUsage();
+      }
+      b.track(activeKey, e);
       if (onEvent) onEvent(e);
+      if (e.type === 'fallback') activeKey = `${key}/a${++attempt}`;
+      if (b.exceeded) throw BUDGET_LIMIT_REACHED;
     });
-    b.track(key, { type: 'usage', ...r.usage });
+    b.track(activeKey, { type: 'usage', ...r.usage });
     return { ...r, agent: name, budget: b.toJSON() };
   } catch (e) {
     if (b.exceeded && !opts.signal?.aborted)

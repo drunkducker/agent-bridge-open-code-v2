@@ -6,6 +6,7 @@ import { mkdtempSync, realpathSync, existsSync, mkdirSync, readFileSync } from '
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { cmdSetup } from '../dist/cli/setup.js';
 
 const MAIN = fileURLToPath(new URL('../dist/cli/main.js', import.meta.url));
 
@@ -78,4 +79,38 @@ test('setup: --help flag or command works', async () => {
   const c = await new Promise((res) => p.on('close', res));
   assert.equal(c, 0);
   assert.match(o, /agentbridge/);
+});
+
+test('setup rejects invalid scope and timeout before creating setup files', async () => {
+  const d = sandbox();
+  for (const args of [
+    ['--yes', '--scope', 'porject'],
+    ['--yes', '--scope', 'user', '--timeout', '0'],
+    ['--yes', '--scope', 'project', '--timeout', '-1'],
+    ['--yes', '--scope', 'project', '--permissions', 'read-onyl'],
+  ]) {
+    const r = await runSetup(d, args);
+    assert.notEqual(r.c, 0, r.o + r.e);
+  }
+  assert.equal(existsSync(path.join(d.proj, '.agents')), false);
+  assert.equal(existsSync(path.join(d.pi, 'mcp.json')), false);
+  assert.equal(existsSync(path.join(d.xdg, 'opencode', 'opencode.json')), false);
+});
+
+test('setup preserves supported local scope and a valid timeout for a selected CLI', async () => {
+  const d = sandbox();
+  const r = await runSetup(d, ['--yes', '--agent', 'pi', '--scope', 'local', '--timeout', '42', '--no-skill']);
+  assert.equal(r.c, 0, r.e + r.o);
+  assert.match(r.o, /Scope:\s+local/);
+  const cfg = JSON.parse(readFileSync(path.join(d.pi, 'mcp.json'), 'utf8'));
+  assert.equal(cfg.mcpServers.agentbridge.timeout, 42);
+});
+
+test('cmdSetup rejects a boolean timeout before environment scanning or file writes', async () => {
+  let output = '';
+  await assert.rejects(
+    cmdSetup([], { timeout: true }, { out: (value) => (output += String(value)), err() {} }),
+    /timeout/i
+  );
+  assert.equal(output, '');
 });

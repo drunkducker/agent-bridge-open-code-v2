@@ -93,6 +93,7 @@ function buildArgs(o: any, mcpFile?: string, resumeId?: string): string[] {
       break;
     case 'full':
       a.push('--permission-mode', 'bypassPermissions');
+      if (o.dangerouslySkipPermissions === true) a.push('--dangerously-skip-permissions');
       if (o.offline) a.push('--disallowed-tools', 'WebFetch,WebSearch');
       if (mcpTools.length) allowedToolsStr = ['*', ...mcpTools].join(',');
       break;
@@ -123,8 +124,10 @@ function buildArgs(o: any, mcpFile?: string, resumeId?: string): string[] {
       throw bad('extraArgs must be string[]');
     }
     if (o.permissions !== 'full') {
-      for (const arg of o.extraArgs) {
-        if (/^(--permission-mode|--tools|--allowedTools|--dangerously-skip-permissions)/i.test(arg.trim())) {
+      for (let i = 0; i < o.extraArgs.length; i++) {
+        const arg = o.extraArgs[i].trim();
+        const restrictiveEmptyTools = /^--tools$/i.test(arg) && o.extraArgs[i + 1] === '' || /^--tools=$/i.test(arg);
+        if (!restrictiveEmptyTools && /^(--permission-mode|--tools(?:=|$)|--allowedTools|--allowed-tools|--dangerously-skip-permissions)/i.test(arg)) {
           throw bad(`extraArgs cannot override permissions or tools under "${o.permissions}" permissions`);
         }
       }
@@ -149,11 +152,15 @@ const adapter: AgentAdapter = {
     return [...set];
   },
   async *run(opts: any): AsyncGenerator<AgentEvent, RunResult, void> {
+    if (opts?.dangerouslySkipPermissions != null && typeof opts.dangerouslySkipPermissions !== 'boolean')
+      throw bad('dangerouslySkipPermissions must be boolean');
     if (opts && opts.isolated != null && typeof opts.isolated !== 'boolean') throw bad('isolated must be boolean');
     if (opts?.effort != null && !(EFFORTS as readonly string[]).includes(opts.effort))
       throw bad(`effort must be one of ${EFFORTS.join('|')}`);
     const { isolated, effort, ...rest } = opts || {};
     const o = { ...validateOptions(rest), isolated, effort };
+    if (o.dangerouslySkipPermissions && o.permissions !== 'full')
+      throw bad('dangerouslySkipPermissions requires full permissions');
     const sess = o.session;
     if (sess?.id != null && !UUID.test(sess.id)) throw bad('session.id must be a UUID');
     let resumeId: string | undefined;

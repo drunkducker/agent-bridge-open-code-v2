@@ -525,7 +525,7 @@ const adapter: AgentAdapter = {
                   sum.cachedInput += u.cacheRead || 0;
                   sum.reasoning += u.reasoning || 0;
                   sum.cost += u.cost?.total || 0;
-                  yield ev.usage((u.input || 0) + (u.cacheRead || 0) + (u.cacheWrite || 0), u.output || 0, u.cost?.total || undefined);
+                  yield ev.usage((u.input || 0) + (u.cacheRead || 0) + (u.cacheWrite || 0), u.output || 0, u.cost?.total || undefined, true);
                 }
                 if (m.message.stopReason === 'error' || m.message.errorMessage) {
                   lastErr = m.message.errorMessage || 'provider error';

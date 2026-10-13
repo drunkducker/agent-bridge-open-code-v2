@@ -114,12 +114,15 @@ export function getIdeConfigPath(
   target: string,
   options?: InstallIdeOptions
 ): string {
+  const scope = options?.scope === undefined ? 'user' : options.scope;
+  if (scope !== 'user' && scope !== 'project') {
+    throw new Error('scope must be user|project');
+  }
   if (options?.configPath) {
     return path.resolve(options.configPath);
   }
 
   const raw = target.toLowerCase().trim();
-  const scope = options?.scope || 'user';
   const cwd = path.resolve(options?.cwd || process.cwd());
 
   switch (raw) {
@@ -186,12 +189,21 @@ export function installIde(
   target: string,
   options?: InstallIdeOptions
 ): InstallIdeResult {
+  const scope = options?.scope === undefined ? 'user' : options.scope;
+  if (scope !== 'user' && scope !== 'project') {
+    throw new Error('scope must be user|project');
+  }
+  const timeout = options?.timeout === undefined ? 300 : options.timeout;
+  if (typeof timeout !== 'number' || !Number.isFinite(timeout) || timeout <= 0) {
+    throw new Error('timeout must be a finite positive number');
+  }
+
   const targetPath = getIdeConfigPath(target, options);
   const cliPath = path.resolve(options?.cliPath || DEFAULT_CLI);
   const serverConfig = {
     command: process.execPath,
     args: [cliPath, 'bridge'],
-    timeout: options?.timeout ?? 300,
+    timeout,
   };
 
   const norm = target.toLowerCase().trim();

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
@@ -26,6 +26,23 @@ const collect = async (p) => {
 
 const N = process.execPath;
 const CLI = path.resolve('dist/cli/main.js');
+
+function isolatedConfigFiles() {
+  const root = mkdtempSync(path.join(tmpdir(), 'ab-config-policy-'));
+  const home = path.join(root, 'home');
+  const cwd = path.join(root, 'project');
+  mkdirSync(home, { recursive: true });
+  mkdirSync(path.join(cwd, '.agentbridge'), { recursive: true });
+  const env = { AGENTBRIDGE_HOME: home };
+  return {
+    root, home, cwd, env,
+    globalFile: path.join(home, 'config.json'),
+    projectFile: path.join(cwd, '.agentbridge', 'config.json'),
+    writeGlobal: (text) => writeFileSync(path.join(home, 'config.json'), text),
+    writeProject: (text) => writeFileSync(path.join(cwd, '.agentbridge', 'config.json'), text),
+    cleanup: () => rmSync(root, { recursive: true, force: true }),
+  };
+}
 
 test('permissions: default is read-only and ceiling is full by default', () => {
   const cleanEnv = {};
@@ -62,6 +79,80 @@ test('permissions: AGENTBRIDGE_DEFAULT_PERMS overrides default', () => {
   assert.equal(getDefaultPermissions(customEnv), 'edit');
   const o = validateOptions({ prompt: 'test', env: customEnv });
   assert.equal(o.permissions, 'edit');
+});
+
+test('config rejects present invalid permission policy values in global and project files', () => {
+  for (const scope of ['global', 'project']) {
+    for (const key of ['permissionsCeiling', 'defaultPermissions']) {
+      for (const value of [null, false, 0, '', 'read-onyl']) {
+        const c = isolatedConfigFiles();
+        try {
+          c.writeGlobal(JSON.stringify({ permissionsCeiling: 'read-only', defaultPermissions: 'read-only' }));
+          if (scope === 'project') c.writeProject(JSON.stringify({ [key]: value }));
+          else c.writeGlobal(JSON.stringify({ [key]: value }));
+          assert.throws(
+            () => loadConfig(c.cwd, c.env),
+            (err) => err.code === 'BAD_OPTION' && err.message.includes(key) && err.message.includes(scope === 'global' ? c.globalFile : c.projectFile),
+            `${scope} ${key}=${JSON.stringify(value)} must be rejected`
+          );
+        } finally {
+          c.cleanup();
+        }
+      }
+    }
+  }
+});
+
+test('config rejects malformed roots and empty existing files', () => {
+  for (const text of ['[]', 'null', '', ' \n\t']) {
+    const c = isolatedConfigFiles();
+    try {
+      c.writeGlobal(text);
+      assert.throws(
+        () => loadConfig(c.cwd, c.env),
+        (err) => err.code === 'BAD_OPTION' && err.message.includes(c.globalFile),
+        `global config ${JSON.stringify(text)} must be rejected`
+      );
+    } finally {
+      c.cleanup();
+    }
+  }
+});
+
+test('permission helpers reject invalid env values and still validate loaded config under valid overrides', () => {
+  const c = isolatedConfigFiles();
+  try {
+    for (const env of [
+      { ...c.env, AGENTBRIDGE_PERMS_CEILING: 'read-onyl' },
+      { ...c.env, AGENTBRIDGE_PERMS: 'read-onyl' },
+      { ...c.env, AGENTBRIDGE_DEFAULT_PERMS: 'read-onyl' },
+      { ...c.env, AGENTBRIDGE_DEFAULT_PERMISSIONS: 'read-onyl' },
+      { ...c.env, AGENTBRIDGE_PERMS_CEILING: 'full', AGENTBRIDGE_PERMS: 'read-onyl' },
+    ]) {
+      assert.throws(() => loadConfig(c.cwd, env), (err) => err.code === 'BAD_OPTION');
+      assert.throws(() => getPermissionsCeiling(env, c.cwd), (err) => err.code === 'BAD_OPTION');
+      assert.throws(() => getDefaultPermissions(env, c.cwd), (err) => err.code === 'BAD_OPTION');
+    }
+
+    c.writeGlobal('{');
+    assert.throws(() => getPermissionsCeiling({ ...c.env, AGENTBRIDGE_PERMS_CEILING: 'read-only' }, c.cwd), /Failed to parse/);
+    assert.throws(() => getDefaultPermissions({ ...c.env, AGENTBRIDGE_DEFAULT_PERMS: 'edit' }, c.cwd), /Failed to parse/);
+  } finally {
+    c.cleanup();
+  }
+});
+
+test('valid config and env permission values retain project and env precedence', () => {
+  const c = isolatedConfigFiles();
+  try {
+    c.writeGlobal(JSON.stringify({ permissionsCeiling: 'edit', defaultPermissions: 'plan' }));
+    c.writeProject(JSON.stringify({ permissionsCeiling: 'read-only' }));
+    assert.deepEqual(loadConfig(c.cwd, c.env), { permissionsCeiling: 'read-only', defaultPermissions: 'plan' });
+    const env = { ...c.env, AGENTBRIDGE_PERMS_CEILING: 'full', AGENTBRIDGE_DEFAULT_PERMS: 'edit' };
+    assert.deepEqual(loadConfig(c.cwd, env), { permissionsCeiling: 'full', defaultPermissions: 'edit' });
+  } finally {
+    c.cleanup();
+  }
 });
 
 test('bridge: resolvePerms applies default read-only and respects ceiling', () => {

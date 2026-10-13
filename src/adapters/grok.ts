@@ -12,13 +12,17 @@ const adapter = cliJsonLinesAdapter({
   defaultModel: 'grok-4.7',
   buildArgs(o, prompt) {
     // Grok takes the prompt positionally, before every other flag.
-    const args: string[] = ['-p', prompt, '--json']
+    const args: string[] = ['-p', prompt, '--output-format', 'streaming-json']
     if (o.model) args.push('-m', o.model)
-    if (o.permissions === 'full') args.push('--permission-mode', 'bypassPermissions')
+    const permissionMode = o.permissions === 'full' ? 'bypassPermissions' : o.permissions === 'plan' ? 'plan' : 'default'
+    args.push('--permission-mode', permissionMode)
     if (o.cwd) args.push('--cwd', o.cwd)
     if (o.extraArgs?.length) args.push(...o.extraArgs.map(String))
     return args
   },
+  textMatch: (j) => j.type === 'text',
+  textOf: (j) => j.data || '',
+  sessionOf: (j) => (j.type === 'end' ? j.sessionId : undefined),
   authRe: /auth|login|api[-_]?key/i,
   authMessage: (blob) => `Grok CLI authentication missing: ${blob}`,
 })

@@ -64,9 +64,18 @@ function bridgeCtx(flags: Record<string, any>) {
     env.AGENTBRIDGE_MAX_DEPTH = String(flags['max-depth']);
   }
   if (process.env.AGENTBRIDGE_HOME) env.AGENTBRIDGE_HOME = process.env.AGENTBRIDGE_HOME;
-  const timeout = flags.timeout != null ? Number(flags.timeout) : 300;
-  if (isNaN(timeout) || timeout <= 0) throw new UsageError('--timeout must be a positive number');
+  const timeout = Object.prototype.hasOwnProperty.call(flags, 'timeout') ? positiveTimeout(flags.timeout) : 300;
+  if (!Number.isFinite(timeout) || timeout <= 0) throw new UsageError('--timeout must be a finite positive number');
   return { scope, permissions: ceiling, defaultPermissions: def, env, cwd: path.resolve(flags.cwd || process.cwd()), timeout };
+}
+
+function positiveTimeout(raw: any): number {
+  if (typeof raw !== 'string' && typeof raw !== 'number') {
+    throw new UsageError('--timeout must be a finite positive number');
+  }
+  const timeout = Number(raw);
+  if (!Number.isFinite(timeout) || timeout <= 0) throw new UsageError('--timeout must be a finite positive number');
+  return timeout;
 }
 
 const writtenSkills = new Set<string>();
@@ -108,20 +117,37 @@ function setCodexTimeout(timeout: number, out: (msg: string) => void) {
   } catch {
     return;
   }
-  const head = '[mcp_servers.agentbridge]';
-  const i = t.indexOf(head);
-  if (i < 0) return;
-  const rest = t.slice(i + head.length);
-  const j = rest.search(/^\[/m);
-  const body = j < 0 ? rest : rest.slice(0, j);
-  if (/^timeout\s*=/m.test(body)) {
-    const updated = body.replace(/^timeout\s*=\s*\d+/m, `timeout = ${timeout}`);
-    writeFileSync(file, t.slice(0, i + head.length) + updated + (j < 0 ? '' : rest.slice(j)));
+  const section = /^[ \t]*\[mcp_servers\.agentbridge\][ \t]*(?:#.*)?(?:\r?\n|$)/m.exec(t);
+  if (!section || section.index == null) return;
+  const start = section.index + section[0].length;
+  const rest = t.slice(start);
+  const nextTable = /^[ \t]*\[[^\r\n]+\][ \t]*(?:#.*)?(?:\r?\n|$)/m.exec(rest);
+  const end = nextTable?.index ?? rest.length;
+  const body = rest.slice(0, end);
+  const nl = t.includes('\r\n') ? '\r\n' : '\n';
+  const lines = body.match(/[^\n]*\n|[^\n]+$/g) || [];
+  const keyLine = /^([ \t]*)(timeout|tool_timeout_sec)([ \t]*=[ \t]*)([^#\r\n]*?)([ \t]*(?:#.*)?)(\r?\n?)$/;
+  const parsed = lines.map((line) => keyLine.exec(line));
+  const nativeIndex = parsed.findIndex((m) => m?.[2] === 'tool_timeout_sec');
+  const legacyIndex = parsed.findIndex((m) => m?.[2] === 'timeout');
+  if (nativeIndex >= 0 || legacyIndex >= 0) {
+    const keepIndex = nativeIndex >= 0 ? nativeIndex : legacyIndex;
+    const updated = lines.map((line, i) => {
+      const m = parsed[i];
+      if (!m) return line;
+      if (i === keepIndex) return `${m[1]}tool_timeout_sec${m[3]}${timeout}${m[5]}${m[6]}`;
+      if (m[2] === 'timeout' || m[2] === 'tool_timeout_sec') {
+        const comment = /#.*$/.exec(m[5])?.[0];
+        return comment ? `${m[1]}${comment}${m[6]}` : '';
+      }
+      return line;
+    }).join('');
+    writeFileSync(file, t.slice(0, start) + updated + rest.slice(end));
     return;
   }
-  const nl = t.includes('\r\n') ? '\r\n' : '\n';
-  const at = i + head.length + body.replace(/\s+$/, '').length;
-  writeFileSync(file, t.slice(0, at) + nl + `timeout = ${timeout}` + t.slice(at));
+  const at = body.replace(/[ \t\r\n]+$/, '').length;
+  const separator = at > 0 && !body.slice(0, at).endsWith('\n') ? nl : '';
+  writeFileSync(file, t.slice(0, start + at) + separator + `tool_timeout_sec = ${timeout}` + nl + t.slice(start + at));
 }
 
 function autoApproveCodex(out: (msg: string) => void) {
@@ -294,6 +320,16 @@ export async function cmdInstall(
   io: { out: (msg: any) => void; err: (msg: any) => void }
 ): Promise<void> {
   const target = _[0];
+  if (flags.scope != null && !['user', 'project', 'local'].includes(flags.scope)) {
+    throw new UsageError('--scope must be project|user|local');
+  }
+  const hasTimeout = Object.prototype.hasOwnProperty.call(flags, 'timeout');
+  const cliTimeout = hasTimeout ? positiveTimeout(flags.timeout) : 300;
+  const isIdeTarget = ['cursor', 'vscode', 'code', 'claude-desktop', 'claude_desktop', 'zed', 'windsurf'].includes(target || '');
+  if (isIdeTarget && flags.scope != null && flags.scope !== 'user' && flags.scope !== 'project') {
+    throw new UsageError('IDE --scope must be user|project');
+  }
+  if (target === 'all') bridgeCtx(flags);
   if (!target) {
     if (process.stdin.isTTY && !flags.yes && !flags['non-interactive']) {
       const { cmdSetup } = await import('./setup.js');
@@ -335,7 +371,7 @@ export async function cmdInstall(
     const res = installIde(target as any, {
       scope: flags.scope,
       cwd: flags.cwd,
-      timeout: flags.timeout ? Number(flags.timeout) : 300,
+      timeout: cliTimeout,
     });
     io.out(`Installed agentbridge MCP server into ${target} (${res.path})`);
     return;

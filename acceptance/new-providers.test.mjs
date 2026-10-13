@@ -49,11 +49,11 @@ test('new providers expose supported models', T, async () => {
 
 test('new providers throw NOT_INSTALLED when CLI binary is missing', T, async () => {
   // Test each adapter with an invalid or non-existent binary path via env
-  const dummyEnv = { PATH: '' };
+  const dummyEnv = process.platform === 'win32' ? { PATH: '', Path: '' } : { PATH: '' };
   for (const name of ['cursor', 'grok', 'gemini', 'devin']) {
     const adapter = await agents.get(name);
     try {
-      const it = adapter.run({ prompt: 'test', env: dummyEnv });
+      const it = adapter.run({ prompt: 'test', env: dummyEnv, timeoutMs: 1000 });
       await it.next();
       assert.fail(`Should have thrown for ${name}`);
     } catch (e) {

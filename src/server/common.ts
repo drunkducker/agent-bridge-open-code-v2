@@ -387,11 +387,15 @@ export async function* runAgent(o: any): AsyncGenerator<{ type: string; delta: s
   if (o.pool && acct) {
     getProactiveQuotaStatus(aname, undefined, { env: acct.env }).then((q) => {
       if (q && q.status === 'ok') {
+        const measuredSession = q.measured === true && q.source !== 'unmetered' &&
+          typeof q.usedPercent === 'number' && Number.isFinite(q.usedPercent);
+        const measuredWeekly = q.measured === true && q.source !== 'unmetered' &&
+          typeof q.secondaryPercent === 'number' && Number.isFinite(q.secondaryPercent);
         o.pool.updateQuota(aname, acct.name, {
-          sessionPercent: q.usedPercent,
-          weeklyPercent: q.secondaryPercent,
-          resetsAt: q.resetAt,
-          isThrottled: !q.okToProceed,
+          ...(measuredSession ? { sessionPercent: q.usedPercent! } : {}),
+          ...(measuredWeekly ? { weeklyPercent: q.secondaryPercent! } : {}),
+          ...(typeof q.resetAt === 'number' && Number.isFinite(q.resetAt) ? { resetsAt: q.resetAt } : {}),
+          ...(measuredSession ? { isThrottled: !q.okToProceed } : {}),
         });
       }
     }).catch(() => {});
@@ -426,7 +430,6 @@ export async function* runAgent(o: any): AsyncGenerator<{ type: string; delta: s
   if (o.jsonSchema) base.jsonSchema = o.jsonSchema;
   if (!isAgent) {
     if (aname === 'claude') base.extraArgs = ['--tools', ''];
-    else if (aname === 'codex') base.extraArgs = ['--sandbox', 'read-only'];
     else if (aname === 'pi') base.extraArgs = ['-ne', '-np', '-ns'];
   }
   const holdMs = o.holdMs ?? (o.fallback?.length ? 1500 : 0),
@@ -442,6 +445,7 @@ export async function* runAgent(o: any): AsyncGenerator<{ type: string; delta: s
         prompt: known && o.incremental ? o.incremental : o.prompt,
         session: key ? (known ? { mode: 'continue', id: known.id } : { mode: 'new' }) : { mode: 'ephemeral' },
         ...(env ? { env } : {}),
+        ...(o.quotaPolicy ? { quotaPolicy: o.quotaPolicy } : {}),
         ...(o.fallback?.length && !more ? { fallback: o.fallback } : {}),
         ...(effort ? { effort } : {}),
       };
@@ -712,10 +716,26 @@ export const sseData = (res: any, obj: any, event?: string): void =>
 /** AbortSignal that fires when the client goes away before we finish. */
 export function clientAbort(res: any): AbortSignal {
   const ac = new AbortController();
-  res.on('close', () => {
+  const cleanup = () => {
+    res.removeListener?.('close', onClose);
+    res.removeListener?.('finish', cleanup);
+    ac.signal.removeEventListener('abort', cleanup);
+  };
+  const onClose = () => {
+    cleanup();
     if (!res.writableFinished) ac.abort();
-  });
+  };
+  if (res.destroyed && !res.writableFinished) ac.abort();
+  else {
+    res.once('close', onClose);
+    res.once('finish', cleanup);
+    ac.signal.addEventListener('abort', cleanup, { once: true });
+  }
   return ac.signal;
+}
+
+export function assertClientActive(signal: AbortSignal): void {
+  if (signal.aborted) throw new HttpError(499, 'Client disconnected', 'api_error', 'aborted');
 }
 
 export function contentText(c: any): string {

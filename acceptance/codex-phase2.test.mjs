@@ -19,6 +19,50 @@ test('A04: daemon pool keys instances by cwd and effective account env', () => {
   assert.equal(daemon1, daemon1Reused, 'Same account must reuse the active daemon instance');
 });
 
+test('daemon pool separates credentials with identical suffixes and reuses identical effective credentials', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'cx-p2-credential-key-'));
+  const alpha = { OPENAI_API_KEY: 'fake-account-alpha-SAME1234', CODEX_HOME: '/codex/shared' };
+  const bravo = { OPENAI_API_KEY: 'fake-account-bravo-SAME1234', CODEX_HOME: '/codex/shared' };
+  const first = codexDaemonPool.get(dir, alpha);
+  assert.equal(codexDaemonPool.get(dir, { ...alpha }), first);
+  assert.notEqual(codexDaemonPool.get(dir, bravo), first);
+  assert.notEqual(codexDaemonPool.get(dir, { ...alpha, OPENAI_BASE_URL: 'https://provider.invalid/v2' }), first);
+});
+
+test('daemon pool identity follows explicit CODEX_API_KEY over inherited credentials', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'cx-p2-codex-key-'));
+  const oldOpenAI = process.env.OPENAI_API_KEY;
+  const oldCodex = process.env.CODEX_API_KEY;
+  process.env.OPENAI_API_KEY = 'inherited-openai-secret';
+  process.env.CODEX_API_KEY = 'inherited-codex-secret';
+  try {
+    const noExplicitKeys = codexDaemonPool.get(dir, {});
+    assert.equal(codexDaemonPool.get(dir, { CODEX_API_KEY: '' }), noExplicitKeys, 'inherited API keys are stripped by ensureStarted and must not split the pool');
+    const explicitCodexKey = codexDaemonPool.get(dir, { CODEX_API_KEY: 'fake-explicit-codex-secret' });
+    assert.notEqual(explicitCodexKey, noExplicitKeys);
+    assert.equal(codexDaemonPool.get(dir, { CODEX_API_KEY: 'fake-explicit-codex-secret' }), explicitCodexKey);
+  } finally {
+    if (oldOpenAI === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = oldOpenAI;
+    if (oldCodex === undefined) delete process.env.CODEX_API_KEY; else process.env.CODEX_API_KEY = oldCodex;
+  }
+});
+
+test('daemon pool key respects effective CODEX_HOME and inherited account precedence', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'cx-p2-home-key-'));
+  const oldHome = process.env.CODEX_HOME;
+  const oldAccount = process.env.AGENTBRIDGE_ACCOUNT_NAME;
+  process.env.CODEX_HOME = path.join(dir, 'inherited-home');
+  process.env.AGENTBRIDGE_ACCOUNT_NAME = 'process-account';
+  try {
+    const inherited = codexDaemonPool.get(dir, {});
+    assert.equal(codexDaemonPool.get(dir, { AGENTBRIDGE_ACCOUNT_NAME: 'process-account' }), inherited);
+    assert.notEqual(codexDaemonPool.get(dir, { CODEX_HOME: '' }), inherited, 'an explicit empty override wins over inherited CODEX_HOME');
+  } finally {
+    if (oldHome === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = oldHome;
+    if (oldAccount === undefined) delete process.env.AGENTBRIDGE_ACCOUNT_NAME; else process.env.AGENTBRIDGE_ACCOUNT_NAME = oldAccount;
+  }
+});
+
 test('A58 & A05: sendRpc respects AbortSignal and times out cleanly without leaks', async () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'cx-p2-abort-'));
   const daemon = new CodexAppServerDaemon(dir);
@@ -124,5 +168,85 @@ test('A03: concurrent runTurn calls are serialized and do not clobber activeTurn
   assert.equal(executionLog[2].prompt, 'Second turn');
   assert.equal(executionLog[3].event, 'complete');
   assert.equal(executionLog[3].prompt, 'Second turn');
+});
+
+test('runTurn timeout during delayed thread/start prevents turn/start and is reported as TIMEOUT', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'cx-p2-setup-timeout-'));
+  const daemon = new CodexAppServerDaemon(dir);
+  daemon.ensureStarted = async () => {};
+  const calls = [];
+  daemon.sendRpc = async (method) => {
+    calls.push(method);
+    if (method === 'thread/start') {
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      return { thread: { id: 'thread-late' } };
+    }
+    if (method === 'turn/start') return { turn: { id: 'turn-should-not-start' } };
+    return {};
+  };
+  const turn = daemon.runTurn({ prompt: 'x', permissions: 'full', timeoutMs: 10 }, Date.now());
+  await assert.rejects(async () => { for await (const _ of turn) {} }, (e) => e instanceof AgentError && e.code === 'TIMEOUT');
+  assert.deepEqual(calls, ['thread/start']);
+});
+
+test('runTurn with an expired t0 deadline does not start the daemon or any RPC', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'cx-p2-expired-deadline-'));
+  const daemon = new CodexAppServerDaemon(dir);
+  let startupCalls = 0;
+  let rpcCalls = 0;
+  daemon.ensureStarted = async () => { startupCalls++; };
+  daemon.sendRpc = async () => { rpcCalls++; return {}; };
+  const expiredT0 = Date.now() - 100;
+  await assert.rejects(async () => {
+    for await (const _ of daemon.runTurn({ prompt: 'x', permissions: 'full', timeoutMs: 5 }, expiredT0)) {}
+  }, (e) => e instanceof AgentError && e.code === 'TIMEOUT');
+  assert.equal(startupCalls, 0);
+  assert.equal(rpcCalls, 0);
+});
+
+test('runTurn timeout aborts a hanging setup RPC promptly with TIMEOUT', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'cx-p2-setup-hang-'));
+  const daemon = new CodexAppServerDaemon(dir);
+  daemon['isAlive'] = true;
+  daemon['p'] = { stdin: { write: () => {} }, child: { killed: false, exitCode: null } };
+  daemon.ensureStarted = async (_env, signal) => daemon.sendRpc('thread/start', {}, { signal });
+  const t0 = Date.now();
+  await assert.rejects(async () => { for await (const _ of daemon.runTurn({ prompt: 'x', permissions: 'full', timeoutMs: 25 }, t0)) {} },
+    (e) => e instanceof AgentError && e.code === 'TIMEOUT');
+  assert.ok(Date.now() - t0 < 500, 'setup timeout should not wait for sendRpc default timeout');
+});
+
+test('runTurn caller abort remains ABORTED, including while queued behind another turn', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'cx-p2-queued-abort-'));
+  const daemon = new CodexAppServerDaemon(dir);
+  daemon.ensureStarted = async () => {};
+  const calls = [];
+  let markFirstStarted;
+  const firstStarted = new Promise((resolve) => { markFirstStarted = resolve; });
+  daemon.sendRpc = async (method, params) => {
+    calls.push({ method, prompt: params?.input?.[0]?.text });
+    if (method === 'thread/start') return { thread: { id: 'thread-1' } };
+    if (method === 'turn/start') {
+      if (params.input[0].text === 'first') { markFirstStarted(); return { turn: { id: 'turn-1' } }; }
+      return { turn: { id: 'turn-2' } };
+    }
+    return {};
+  };
+  const first = daemon.runTurn({ prompt: 'first', permissions: 'full' }, Date.now());
+  const firstTask = (async () => { for await (const _ of first) {} })();
+  await firstStarted;
+  const controller = new AbortController();
+  const second = daemon.runTurn({ prompt: 'second', permissions: 'full', signal: controller.signal }, Date.now());
+  const secondTask = (async () => { for await (const _ of second) {} })();
+  controller.abort();
+  await assert.rejects(secondTask, (e) => e instanceof AgentError && e.code === 'ABORTED');
+  assert.equal(daemon.activeTurn?.text, '', 'queued cancellation must not clobber the active turn');
+  const timed = daemon.runTurn({ prompt: 'timed', permissions: 'full', timeoutMs: 10 }, Date.now());
+  const timedTask = (async () => { for await (const _ of timed) {} })();
+  await assert.rejects(timedTask, (e) => e instanceof AgentError && e.code === 'TIMEOUT');
+  assert.equal(daemon.activeTurn?.turnId, 'turn-1', 'queued timeout must not clear the active turn');
+  assert.ok(!calls.some((call) => call.prompt === 'timed'), 'a timed out queued turn must never start an RPC');
+  daemon['handleServerNotification']('turn/completed', { turn: { status: 'completed' } }, {});
+  await firstTask;
 });
 

@@ -823,7 +823,7 @@ const adapter: AgentAdapter & { _run: (o: RunOptions) => AsyncGenerator<AgentEve
                 usage.input += i;
                 usage.output += c;
                 if (typeof part.cost === 'number') usage.cost = (usage.cost || 0) + part.cost;
-                yield ev.usage(i, c, part.cost);
+                yield ev.usage(i, c, part.cost, true);
               }
               break;
             }

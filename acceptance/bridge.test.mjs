@@ -31,7 +31,10 @@ test('large payload (3MB) + unicode + malformed line + batch', { timeout: 30000 
     const big = 'x'.repeat(3 * 1024 * 1024) + 'ção✓';
     const t0 = Date.now();
     const r = await c.tool('ask_claude', { prompt: big, permissions: 'full' });
-    assert.match(text(r), /broader/); assert.ok(Date.now() - t0 < 5000, 'parsing 3MB must be fast');
+    assert.equal(r.result.isError, true);
+    assert.equal(r.result.structuredContent.error.code, 'BAD_OPTION');
+    assert.match(r.result.structuredContent.error.message, /configured permission ceiling "read-only"/);
+    assert.ok(Date.now() - t0 < 5000, 'parsing 3MB must be fast');
     c.proc.stdin.write('{not json\n');
     assert.ok(await c.call('ping', {}));
     assert.deepEqual(c.bad, []);

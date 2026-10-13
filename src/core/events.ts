@@ -27,6 +27,7 @@ export interface EventUsage {
   input: number;
   output: number;
   cost?: number;
+  incremental?: boolean;
 }
 
 export interface EventError {
@@ -47,6 +48,18 @@ export interface EventFallback {
   message: string;
 }
 
+export interface EventQuota {
+  type: 'quota';
+  phase: 'waiting' | 'ready' | 'skipped';
+  agent: string;
+  message: string;
+  threshold: number;
+  remainingPercent?: number;
+  resetAt?: number;
+  nextCheckAt?: number;
+  candidates?: Array<{ agent: string; threshold?: number; remainingPercent?: number; resetAt?: number }>;
+}
+
 export type CoreEvent =
   | EventSession
   | EventText
@@ -55,7 +68,8 @@ export type CoreEvent =
   | EventUsage
   | EventError
   | EventRaw
-  | EventFallback;
+  | EventFallback
+  | EventQuota;
 
 // Normalized event constructors + JSONL splitting.
 export const ev = {
@@ -64,8 +78,13 @@ export const ev = {
   thinking: (delta: string): EventThinking => ({ type: 'thinking', delta }),
   tool: (name: string, input: any, output?: any): EventTool =>
     output === undefined ? { type: 'tool', name, input } : { type: 'tool', name, input, output },
-  usage: (input = 0, output = 0, cost?: number): EventUsage =>
-    cost === undefined ? { type: 'usage', input, output } : { type: 'usage', input, output, cost },
+  usage: (input = 0, output = 0, cost?: number, incremental = false): EventUsage => ({
+    type: 'usage',
+    input,
+    output,
+    ...(cost === undefined ? {} : { cost }),
+    ...(incremental ? { incremental: true } : {}),
+  }),
   error: (message: unknown): EventError => ({ type: 'error', message: String(message) }),
   raw: (data: any): EventRaw => ({ type: 'raw', data }),
   /** Emitted by run() when a failed attempt is retried on the next agent of options.fallback. */
@@ -76,6 +95,7 @@ export const ev = {
     code,
     message: String(message),
   }),
+  quota: (event: Omit<EventQuota, 'type'>): EventQuota => ({ type: 'quota', ...event }),
 };
 
 /** Parse one line as JSON; returns undefined if blank/not JSON. */

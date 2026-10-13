@@ -1,6 +1,6 @@
 // feat-worktree: run an agent in a throw-away git worktree (or, when cwd is not a git repo, a temp copy) and return the diff.
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, cpSync, rmSync, realpathSync, existsSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, cpSync, rmSync, realpathSync, mkdirSync, lstatSync, readdirSync, readlinkSync, unlinkSync, symlinkSync, statSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { runBudgeted } from './budget.js';
@@ -52,6 +52,81 @@ function normalizePath(p: string): string {
   return path.normalize(p);
 }
 
+function isWithin(root: string, target: string): boolean {
+  const rel = path.relative(path.resolve(root), path.resolve(target));
+  return rel === '' || (rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel));
+}
+
+/** Resolve existing symlink components without ever following one outside root. Dangling paths inside root are safe. */
+function resolveContainedPath(root: string, target: string, link: string, seen = new Set<string>()): string {
+  root = path.resolve(root);
+  target = path.resolve(target);
+  if (!isWithin(root, target)) throw new Error(`Symlink "${link}" escapes sandbox/source root: ${target}`);
+  const rel = path.relative(root, target);
+  const parts = rel ? rel.split(path.sep).filter(Boolean) : [];
+  let current = root;
+  for (let i = 0; i < parts.length; i++) {
+    current = path.join(current, parts[i]);
+    let stat;
+    try {
+      stat = lstatSync(current);
+    } catch (e: any) {
+      if (e.code === 'ENOENT') return path.join(current, ...parts.slice(i + 1));
+      throw new Error(`Cannot inspect symlink target for "${link}": ${e.message}`);
+    }
+    if (stat.isSymbolicLink()) {
+      if (seen.has(current)) throw new Error(`Symlink loop while resolving "${link}"`);
+      const raw = readlinkSync(current);
+      const next = path.isAbsolute(raw) ? raw : path.resolve(path.dirname(current), raw);
+      return resolveContainedPath(root, path.join(next, ...parts.slice(i + 1)), link, new Set([...seen, current]));
+    }
+    if (i < parts.length - 1 && !stat.isDirectory())
+      throw new Error(`Symlink "${link}" targets a non-directory path: ${current}`);
+  }
+  return current;
+}
+
+/** Validate sandbox links and rebase absolute links that refer to the source tree. */
+function normalizeSandboxLinks(root: string, sourceRoot: string): boolean {
+  root = normalizePath(root);
+  sourceRoot = normalizePath(sourceRoot);
+  let changed = false;
+  const walk = (dir: string) => {
+    for (const name of readdirSync(dir)) {
+      const entry = path.join(dir, name);
+      const stat = lstatSync(entry);
+      if (stat.isSymbolicLink()) {
+        const raw = readlinkSync(entry);
+        if (path.isAbsolute(raw)) {
+          const absTarget = path.resolve(raw);
+          if (isWithin(sourceRoot, absTarget)) {
+            const sourceTarget = resolveContainedPath(sourceRoot, absTarget, entry);
+            if (!existsSync(sourceTarget)) throw new Error(`Cannot remap dangling absolute symlink "${entry}"`);
+            const mapped = path.resolve(root, path.relative(sourceRoot, sourceTarget));
+            resolveContainedPath(root, mapped, entry);
+            let dirTarget = false;
+            try { dirTarget = statSync(sourceTarget).isDirectory(); } catch { /* dangling links were rejected above */ }
+            unlinkSync(entry); // removes only this sandbox symlink, never its target
+            symlinkSync(mapped, entry, process.platform === 'win32' ? (dirTarget ? 'junction' : 'file') : undefined);
+            changed = true;
+          } else if (isWithin(root, absTarget)) {
+            resolveContainedPath(root, absTarget, entry);
+          } else {
+            throw new Error(`Symlink "${entry}" escapes sandbox/source root: ${absTarget}`);
+          }
+        } else {
+          const target = path.resolve(path.dirname(entry), raw);
+          resolveContainedPath(root, target, entry);
+        }
+        continue; // never recurse through a symlink or junction
+      }
+      if (stat.isDirectory()) walk(entry);
+    }
+  };
+  walk(root);
+  return changed;
+}
+
 export function createSandbox(cwd = process.cwd()): Sandbox {
   cwd = normalizePath(cwd);
   const dir = normalizePath(mkdtempSync(path.join(tmpdir(), 'ab-wt-')));
@@ -73,45 +148,6 @@ export function createSandbox(cwd = process.cwd()): Sandbox {
       rel = top === cwd ? '' : path.relative(top, cwd);
     }
     sub = !rel || rel === '.' || rel.startsWith('..') ? '' : rel;
-    const patch = tryGit(top, ['diff', 'HEAD', '--binary']);
-    let dirty = false;
-    if (patch && patch.trim()) {
-      try {
-        git(wt, ['apply', '--whitespace=nowarn', '-'], { input: patch });
-        dirty = true;
-      } catch (err: any) {
-        throw new Error(`Failed to apply working tree modifications to sandbox worktree: ${err.stderr || err.message}`);
-      }
-    }
-    // Sync relevant untracked files into the sandbox worktree
-    const untracked = tryGit(top, ['status', '--porcelain=v1', '-uall']);
-    if (untracked) {
-      for (const line of untracked.split('\n')) {
-        if (line.startsWith('?? ')) {
-          const relPath = line.slice(3).trim();
-          if (relPath && !relPath.startsWith('.git') && !relPath.includes('node_modules')) {
-            const src = path.join(top, relPath);
-            const dst = path.join(wt, relPath);
-            try {
-              if (existsSync(src)) {
-                mkdirSync(path.dirname(dst), { recursive: true });
-                cpSync(src, dst, { recursive: true });
-                dirty = true;
-              }
-            } catch {}
-          }
-        }
-      }
-    }
-    if (seedProjectSkills(top, wt).length) dirty = true;
-    if (dirty) {
-      try {
-        git(wt, ['add', '-A']);
-        git(wt, ['commit', '-q', '-m', 'ab-baseline']);
-      } catch (err: any) {
-        throw new Error(`Failed to commit sandbox baseline: ${err.stderr || err.message}`);
-      }
-    }
     const cleanup = () => {
       tryGit(top, ['worktree', 'remove', '--force', wt]);
       tryGit(top, ['worktree', 'prune']);
@@ -122,28 +158,83 @@ export function createSandbox(cwd = process.cwd()): Sandbox {
         /* best effort */
       }
     };
-    return finish(mode, dir, root, sub, cleanup);
+    try {
+      // Build a reproducible patch; external diff/textconv are presentation hooks and may fail
+      // or emit a format that `git apply` cannot consume. A failure must abort the snapshot.
+      const patch = git(top, ['diff', '--no-ext-diff', '--no-textconv', 'HEAD', '--binary']);
+      let dirty = false;
+      if (patch && patch.trim()) {
+        try {
+          git(wt, ['apply', '--whitespace=nowarn', '-'], { input: patch });
+          dirty = true;
+        } catch (err: any) {
+          throw new Error(`Failed to apply working tree modifications to sandbox worktree: ${err.stderr || err.message}`);
+        }
+      }
+      // Use NUL-delimited Git paths: porcelain quotes whitespace and non-ASCII filenames.
+      const untracked = git(top, ['ls-files', '--others', '--exclude-standard', '-z']);
+      if (untracked) {
+        for (const relPath of untracked.split('\0').filter(Boolean)) {
+          const components = relPath.split(/[\\/]/);
+          if (components.some((part) => part === '.git' || part === 'node_modules')) continue;
+          const src = path.join(top, relPath);
+          const dst = path.join(wt, relPath);
+          try {
+            mkdirSync(path.dirname(dst), { recursive: true });
+            cpSync(src, dst, { recursive: true, verbatimSymlinks: true });
+            dirty = true;
+          } catch (err: any) {
+            throw new Error(`Failed to copy untracked path "${relPath}" into sandbox worktree: ${err.message}`);
+          }
+        }
+      }
+      if (seedProjectSkills(top, wt).length) dirty = true;
+      // Seeded project skills may contain ignored symlinks, so validate the complete
+      // sandbox tree after copying them and before recording the baseline commit.
+      if (normalizeSandboxLinks(wt, top)) dirty = true;
+      if (dirty) {
+        try {
+          git(wt, ['add', '-A']);
+          git(wt, ['commit', '-q', '-m', 'ab-baseline']);
+        } catch (err: any) {
+          throw new Error(`Failed to commit sandbox baseline: ${err.stderr || err.message}`);
+        }
+      }
+      return finish(mode, dir, root, sub, cleanup);
+    } catch (err) {
+      cleanup();
+      throw err;
+    }
   }
   mode = 'copy';
   root = path.join(dir, 'copy');
-  mkdirSync(root);
-  cpSync(cwd, root, {
-    recursive: true,
-    filter: (s) => {
-      const b = path.basename(s);
-      return b !== 'node_modules' && b !== '.git';
-    },
-  });
-  git(root, ['init', '-q']);
-  git(root, ['add', '-A']);
-  git(root, ['commit', '-q', '-m', 'ab-baseline', '--allow-empty']);
-  return finish(mode, dir, root, '', () => {
+  const cleanup = () => {
     try {
       rmSync(dir, { recursive: true, force: true });
     } catch {
       /* best effort */
     }
-  });
+  };
+  try {
+    mkdirSync(root);
+    cpSync(cwd, root, {
+      recursive: true,
+      dereference: false,
+      verbatimSymlinks: true,
+      filter: (s) => {
+        const b = path.basename(s);
+        return b !== 'node_modules' && b !== '.git';
+      },
+    });
+    normalizeSandboxLinks(root, cwd);
+    git(root, ['init', '-q']);
+    git(root, ['add', '-A']);
+    git(root, ['commit', '-q', '-m', 'ab-baseline', '--allow-empty']);
+    return finish(mode, dir, root, '', cleanup);
+  } catch (err) {
+    cleanup();
+    throw err;
+  }
 }
 
 function finish(mode: 'git-worktree' | 'copy', dir: string, root: string, sub: string, cleanup: () => void): Sandbox {
@@ -157,12 +248,13 @@ function finish(mode: 'git-worktree' | 'copy', dir: string, root: string, sub: s
     diff(isolatedIndex = false) {
       const env = isolatedIndex ? { ...process.env, GIT_INDEX_FILE: path.join(dir, '.git-tmp-index') } : process.env;
       git(root, ['add', '-A'], { env });
-      const filesArgs = sub ? ['diff', '--cached', '--name-only', 'HEAD', '--', sub] : ['diff', '--cached', '--name-only', 'HEAD'];
-      const diffArgs = sub ? ['diff', '--cached', '--binary', 'HEAD', '--', sub] : ['diff', '--cached', '--binary', 'HEAD'];
-      const rawFiles = git(root, filesArgs, { env })
-        .split('\n')
-        .map((s) => s.trim())
-        .filter(Boolean);
+      const filesArgs = sub
+        ? ['diff', '--cached', '--no-ext-diff', '--no-textconv', '--name-only', '-z', 'HEAD', '--', sub]
+        : ['diff', '--cached', '--no-ext-diff', '--no-textconv', '--name-only', '-z', 'HEAD'];
+      const diffArgs = sub
+        ? ['diff', '--cached', '--no-ext-diff', '--no-textconv', '--binary', 'HEAD', '--', sub]
+        : ['diff', '--cached', '--no-ext-diff', '--no-textconv', '--binary', 'HEAD'];
+      const rawFiles = git(root, filesArgs, { env }).split('\0').filter(Boolean);
       const files = sub
         ? rawFiles.map((f) => (path.isAbsolute(f) ? f : path.relative(sub, f))).map((f) => f.replace(/\\/g, '/'))
         : rawFiles;

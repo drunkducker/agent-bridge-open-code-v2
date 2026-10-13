@@ -7,6 +7,7 @@ import { mkdtempSync, realpathSync, writeFileSync, readFileSync, existsSync, mkd
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { cmdInstall } from '../dist/cli/install.js';
 
 const MAIN = fileURLToPath(new URL('../dist/cli/main.js', import.meta.url));
 const tmp = (p) => realpathSync(mkdtempSync(path.join(tmpdir(), p)));
@@ -146,4 +147,117 @@ test('unknown target and bad options fail', async () => {
   assert.notEqual((await ab(d, ['nope'])).c, 0);
   assert.notEqual((await ab(d, ['opencode', '--permissions', 'root'])).c, 0);
   assert.notEqual((await ab(d, ['opencode', '--scope', 'weird'])).c, 0);
+});
+
+test('IDE install rejects typo scope and invalid timeout without touching project or user config', async () => {
+  const d = sandbox();
+  for (const args of [
+    ['cursor', '--scope', 'porject'],
+    ['cursor', '--scope', 'project', '--timeout', '0'],
+    ['cursor', '--scope', 'project', '--timeout', '-1'],
+  ]) {
+    const r = await ab(d, args);
+    assert.notEqual(r.c, 0, r.o + r.e);
+  }
+  assert.equal(existsSync(path.join(d.proj, '.cursor', 'mcp.json')), false);
+  assert.equal(existsSync(path.join(d.home, '.cursor', 'mcp.json')), false);
+
+  const valid = await ab(d, ['cursor', '--scope', 'project', '--timeout', '42']);
+  assert.equal(valid.c, 0, valid.e + valid.o);
+  assert.equal(JSON.parse(readFileSync(path.join(d.proj, '.cursor', 'mcp.json'), 'utf8')).mcpServers.agentbridge.timeout, 42);
+});
+
+test('Codex install replaces the complete existing timeout literal and preserves TOML comments and tables', async () => {
+  const d = sandbox();
+  const bin = path.join(d.r, 'bin');
+  mkdirSync(bin);
+  writeFileSync(path.join(bin, 'codex.cmd'), '@"%~dp0fake-codex.js" %*\n');
+  writeFileSync(path.join(bin, 'fake-codex.js'), 'process.exit(0);\n');
+  const config = path.join(d.cx, 'config.toml');
+  const env = {
+    ...process.env,
+    HOME: d.home,
+    USERPROFILE: d.home,
+    CODEX_HOME: d.cx,
+    XDG_CONFIG_HOME: d.xdg,
+    AGENTBRIDGE_HOME: path.join(d.r, 'ab'),
+    PATH: `${bin}${path.delimiter}${process.env.PATH || ''}`,
+  };
+  env.Path = env.PATH;
+  for (const oldLiteral of ['60.5', '6.05e1', '6_000']) {
+    writeFileSync(config, `# [mcp_servers.agentbridge]\n  [mcp_servers.agentbridge]\ntimeout = ${oldLiteral} # keep this note\nextra = "still here"\n  [other]\ntimeout = 777\n`);
+    const r = await new Promise((resolve) => {
+      const p = spawn(process.execPath, [MAIN, 'install', 'codex', '--timeout', '600', '--no-skill', '--cwd', d.proj], { env });
+      let out = '', err = '';
+      p.stdout.on('data', (b) => (out += b));
+      p.stderr.on('data', (b) => (err += b));
+      p.on('close', (code) => resolve({ code, out, err }));
+    });
+    assert.equal(r.code, 0, r.err + r.out);
+    const after = readFileSync(config, 'utf8');
+    const agentStart = after.indexOf('[mcp_servers.agentbridge]');
+    const otherStart = after.indexOf('[other]');
+    const agentSection = after.slice(agentStart, otherStart);
+    assert.match(after, /^[ \t]*\[mcp_servers\.agentbridge\]\r?\ntool_timeout_sec = 600 # keep this note\r?\nextra = "still here"/m);
+    assert.match(after, /^[ \t]*\[other\]\r?\ntimeout = 777/m);
+    assert.doesNotMatch(agentSection, /^timeout\s*=/m);
+    assert.doesNotMatch(after, new RegExp(`tool_timeout_sec = ${oldLiteral.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+  }
+
+  writeFileSync(config, '  [mcp_servers.agentbridge]\ntimeout = 30.5 # legacy note\ntool_timeout_sec = 45.5 # native note\n  [other]\ntimeout = 777\n');
+  const both = await new Promise((resolve) => {
+    const p = spawn(process.execPath, [MAIN, 'install', 'codex', '--timeout', '600', '--no-skill', '--cwd', d.proj], { env });
+    let out = '', err = '';
+    p.stdout.on('data', (b) => (out += b));
+    p.stderr.on('data', (b) => (err += b));
+    p.on('close', (code) => resolve({ code, out, err }));
+  });
+  assert.equal(both.code, 0, both.err + both.out);
+  const merged = readFileSync(config, 'utf8');
+  const mergedAgentSection = merged.slice(merged.indexOf('[mcp_servers.agentbridge]'), merged.indexOf('[other]'));
+  assert.match(merged, /^tool_timeout_sec = 600 # native note/m);
+  assert.match(merged, /^# legacy note/m);
+  assert.doesNotMatch(mergedAgentSection, /^timeout\s*=/m);
+  assert.equal((mergedAgentSection.match(/^tool_timeout_sec\s*=/gm) || []).length, 1);
+});
+
+test('install all rejects invalid options before probing agent CLIs', async () => {
+  const d = sandbox();
+  const bin = path.join(d.r, 'bin');
+  const probeLog = path.join(d.r, 'probe.log');
+  mkdirSync(bin);
+  writeFileSync(path.join(bin, 'codex.cmd'), '@"%~dp0fake-codex.js" %*\n');
+  writeFileSync(
+    path.join(bin, 'fake-codex.js'),
+    'require("node:fs").appendFileSync(process.env.PROBE_LOG, process.argv.slice(2).join(" ") + "\\n"); process.exit(0);\n'
+  );
+  const env = {
+    ...process.env,
+    HOME: d.home,
+    USERPROFILE: d.home,
+    CODEX_HOME: d.cx,
+    XDG_CONFIG_HOME: d.xdg,
+    PROBE_LOG: probeLog,
+    PATH: `${bin}${path.delimiter}${process.env.PATH || ''}`,
+  };
+  env.Path = env.PATH;
+  const result = await new Promise((resolve) => {
+    const p = spawn(process.execPath, [MAIN, 'install', 'all', '--permissions', 'read-onyl', '--cwd', d.proj], { env });
+    let out = '', err = '';
+    p.stdout.on('data', (b) => (out += b));
+    p.stderr.on('data', (b) => (err += b));
+    p.on('close', (code) => resolve({ code, out, err }));
+  });
+  assert.notEqual(result.code, 0, result.out + result.err);
+  assert.equal(existsSync(probeLog), false, 'the invalid options must be rejected before any --version probe');
+});
+
+test('cmdInstall rejects boolean timeout values before touching IDE config', async () => {
+  const d = sandbox();
+  await assert.rejects(
+    cmdInstall(['cursor'], { scope: 'project', timeout: true, cwd: d.proj }, { out() {}, err() {} }),
+    /timeout/i
+  );
+  assert.equal(existsSync(path.join(d.proj, '.cursor', 'mcp.json')), false);
+  assert.equal(existsSync(path.join(d.home, '.cursor', 'mcp.json')), false);
 });

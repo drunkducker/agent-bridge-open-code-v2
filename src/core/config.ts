@@ -60,12 +60,35 @@ function readJsonFile(filePath: string): any {
   if (!existsSync(filePath)) return {};
   try {
     const content = readFileSync(filePath, 'utf8');
-    if (!content.trim()) return {};
+    if (!content.trim()) {
+      throw new AgentError('BAD_OPTION', `Configuration file "${filePath}" is empty`);
+    }
     const parsed = JSON.parse(content);
-    if (parsed && typeof parsed === 'object') return parsed;
-    throw new Error('Config root must be an object');
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+    throw new AgentError('BAD_OPTION', `Configuration file "${filePath}" must contain a JSON object`);
   } catch (err: any) {
+    if (err instanceof AgentError) throw err;
     throw new AgentError('BAD_OPTION', `Failed to parse configuration file "${filePath}": ${err.message}`);
+  }
+}
+
+function validatePermissionConfig(config: any, filePath: string): void {
+  for (const key of ['permissionsCeiling', 'defaultPermissions'] as const) {
+    if (Object.hasOwn(config, key) && !PERMISSION_LEVELS.includes(config[key])) {
+      throw new AgentError(
+        'BAD_OPTION',
+        `Invalid "${key}" in configuration file "${filePath}": expected one of ${PERMISSION_LEVELS.join('|')}`
+      );
+    }
+  }
+}
+
+function validatePermissionEnv(value: string | undefined, variable: string): void {
+  if (value && !PERMISSION_LEVELS.includes(value as PermissionLevel)) {
+    throw new AgentError(
+      'BAD_OPTION',
+      `Invalid ${variable} value "${value}": expected one of ${PERMISSION_LEVELS.join('|')}`
+    );
   }
 }
 
@@ -89,29 +112,29 @@ function writeJsonFile(filePath: string, data: any): void {
  * Loads merged configuration: defaults < global config < project config < env vars.
  */
 export function loadConfig(cwd: string = process.cwd(), env: NodeJS.ProcessEnv = process.env): AgentBridgeConfig {
-  const globalCfg = readJsonFile(globalConfigFile(env));
-  const projectCfg = readJsonFile(projectConfigFile(cwd));
+  const globalFile = globalConfigFile(env);
+  const projectFile = projectConfigFile(cwd);
+  const globalCfg = readJsonFile(globalFile);
+  const projectCfg = readJsonFile(projectFile);
+  validatePermissionConfig(globalCfg, globalFile);
+  validatePermissionConfig(projectCfg, projectFile);
 
   const merged: AgentBridgeConfig = {
     ...globalCfg,
     ...projectCfg,
   };
 
-  // Validate loaded permission values from config files
-  if (merged.defaultPermissions && !PERMISSION_LEVELS.includes(merged.defaultPermissions as PermissionLevel)) {
-    delete merged.defaultPermissions;
-  }
-  if (merged.permissionsCeiling && !PERMISSION_LEVELS.includes(merged.permissionsCeiling as PermissionLevel)) {
-    delete merged.permissionsCeiling;
-  }
-
   // Environment variables take precedence over config files
   const envDefault = env.AGENTBRIDGE_DEFAULT_PERMS || env.AGENTBRIDGE_DEFAULT_PERMISSIONS;
+  validatePermissionEnv(env.AGENTBRIDGE_DEFAULT_PERMS, 'AGENTBRIDGE_DEFAULT_PERMS');
+  validatePermissionEnv(env.AGENTBRIDGE_DEFAULT_PERMISSIONS, 'AGENTBRIDGE_DEFAULT_PERMISSIONS');
   if (envDefault && PERMISSION_LEVELS.includes(envDefault as PermissionLevel)) {
     merged.defaultPermissions = envDefault as PermissionLevel;
   }
 
   const envCeiling = env.AGENTBRIDGE_PERMS_CEILING || env.AGENTBRIDGE_PERMS;
+  validatePermissionEnv(env.AGENTBRIDGE_PERMS_CEILING, 'AGENTBRIDGE_PERMS_CEILING');
+  validatePermissionEnv(env.AGENTBRIDGE_PERMS, 'AGENTBRIDGE_PERMS');
   if (envCeiling && PERMISSION_LEVELS.includes(envCeiling as PermissionLevel)) {
     merged.permissionsCeiling = envCeiling as PermissionLevel;
   }
@@ -123,10 +146,6 @@ export function loadConfig(cwd: string = process.cwd(), env: NodeJS.ProcessEnv =
  * Returns the effective permission ceiling (defaults to 'full').
  */
 export function getPermissionsCeiling(env: NodeJS.ProcessEnv = process.env, cwd: string = process.cwd()): PermissionLevel {
-  const envCeiling = env.AGENTBRIDGE_PERMS_CEILING || env.AGENTBRIDGE_PERMS;
-  if (envCeiling && PERMISSION_LEVELS.includes(envCeiling as PermissionLevel)) {
-    return envCeiling as PermissionLevel;
-  }
   const cfg = loadConfig(cwd, env);
   const ceiling = cfg.permissionsCeiling;
   return ceiling && PERMISSION_LEVELS.includes(ceiling) ? ceiling : 'full';
@@ -136,10 +155,6 @@ export function getPermissionsCeiling(env: NodeJS.ProcessEnv = process.env, cwd:
  * Returns the effective default permission level (defaults to 'read-only' for security).
  */
 export function getDefaultPermissions(env: NodeJS.ProcessEnv = process.env, cwd: string = process.cwd()): PermissionLevel {
-  const envDefault = env.AGENTBRIDGE_DEFAULT_PERMS || env.AGENTBRIDGE_DEFAULT_PERMISSIONS;
-  if (envDefault && PERMISSION_LEVELS.includes(envDefault as PermissionLevel)) {
-    return envDefault as PermissionLevel;
-  }
   const cfg = loadConfig(cwd, env);
   const def = cfg.defaultPermissions;
   return def && PERMISSION_LEVELS.includes(def) ? def : 'read-only';

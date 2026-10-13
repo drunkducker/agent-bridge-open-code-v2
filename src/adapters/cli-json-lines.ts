@@ -39,6 +39,17 @@ export interface CliJsonLinesAdapterConfig {
   toolEvent?(j: any): { name: string; input: any } | null
   /** Usage event source fields; default `{ input: j.input, output: j.output, cost: j.cost }`. */
   usageOf?(j: any): { input: number; output: number; cost: any }
+  usageMatch?(j: any): boolean
+  /** Extract session ID from provider-specific event shapes. */
+  sessionOf?(j: any): string | undefined
+  /** Extract provider error messages from provider-specific event shapes. */
+  errorOf?(j: any): string | undefined
+  /** Identify provider events that indicate a failed run even with exit code zero. */
+  fatalErrorMatch?(j: any): boolean
+  /** Treat each output line as plain text instead of attempting JSONL decoding. */
+  plainText?: boolean
+  /** Reject `systemPrompt` instead of silently ignoring it. */
+  unsupportedSystemPrompt?: boolean
   /** Images rejection message; default `Multimodal images are not supported by <Name> CLI adapter`. */
   imagesMessage?: string
 }
@@ -57,6 +68,9 @@ export function cliJsonLinesAdapter(cfg: CliJsonLinesAdapterConfig): AgentAdapte
       }
       if (o.offline) {
         throw new AgentError('BAD_OPTION', `Offline mode is not supported by ${Name} CLI adapter`, { agent: cfg.name })
+      }
+      if (o.systemPrompt && cfg.unsupportedSystemPrompt) {
+        throw new AgentError('BAD_OPTION', `${Name} CLI adapter does not support systemPrompt`, { agent: cfg.name })
       }
       if (o.images?.length) {
         throw new AgentError('BAD_OPTION', cfg.imagesMessage ?? `Multimodal images are not supported by ${Name} CLI adapter`, { agent: cfg.name })
@@ -86,12 +100,28 @@ export function cliJsonLinesAdapter(cfg: CliJsonLinesAdapterConfig): AgentAdapte
 
       let text = '', sessionId: string | undefined
       let usage: any = { input: 0, output: 0, cost: null }
-      let errMsg: string | undefined
+      let errMsg: string | undefined, fatalError: string | undefined
 
       for await (const line of p.lines) {
+        if (cfg.plainText) {
+          text += line + '\n'
+          yield ev.text(line + '\n') as any
+          continue
+        }
         const j = parseJsonLine(line)
         if (j) {
           yield ev.raw(j) as any
+          const session = cfg.sessionOf?.(j)
+          if (session && session !== sessionId) {
+            sessionId = session
+            yield ev.session(session) as any
+          }
+          const error = cfg.errorOf?.(j) ?? (j.type === 'error' ? j.message : undefined)
+          if (error) {
+            errMsg = error || errMsg
+            if (cfg.fatalErrorMatch?.(j)) fatalError = error
+            yield ev.error(error) as any
+          }
           if (textMatch(j)) {
             const delta = textOf(j)
             text += delta
@@ -103,12 +133,9 @@ export function cliJsonLinesAdapter(cfg: CliJsonLinesAdapterConfig): AgentAdapte
             } else if (j.type === 'session') {
               sessionId = j.id
               yield ev.session(j.id) as any
-            } else if (j.type === 'usage') {
+            } else if ((cfg.usageMatch?.(j) ?? j.type === 'usage')) {
               usage = usageOf(j)
               yield ev.usage(usage.input, usage.output) as any
-            } else if (j.type === 'error') {
-              errMsg = j.message || errMsg
-              yield ev.error(j.message) as any
             }
           }
         } else {
@@ -132,15 +159,25 @@ export function cliJsonLinesAdapter(cfg: CliJsonLinesAdapterConfig): AgentAdapte
         })
       }
 
-      if (r.exitCode !== 0 && !text) {
+      if (fatalError) {
+        throw new AgentError('AGENT_FAILED', `${Name} reported failure: ${fatalError}`, {
+          agent: cfg.name,
+          exitCode: r.exitCode,
+          stderr: r.stderr,
+          partial: text.trim(),
+        })
+      }
+
+      if (r.exitCode !== 0) {
         const blob = `${errMsg || ''}\n${r.stderr}`.trim()
-        if (cfg.authRe?.test(blob)) {
+        if (!text && cfg.authRe?.test(blob)) {
           throw new AgentError('NOT_LOGGED_IN', cfg.authMessage ? cfg.authMessage(blob) : `${Name} CLI is not authenticated: ${blob}`, { agent: cfg.name })
         }
         throw new AgentError('AGENT_FAILED', `${Name} exited with code ${r.exitCode}: ${blob}`, {
           agent: cfg.name,
           exitCode: r.exitCode,
           stderr: r.stderr,
+          partial: text.trim(),
         })
       }
 

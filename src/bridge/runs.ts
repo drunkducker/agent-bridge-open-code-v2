@@ -8,7 +8,11 @@ export interface RunEventItem {
   t: number;
   type: string;
   delta?: string;
+  message?: string;
   name?: string;
+  input?: string;
+  output?: string;
+  error?: string;
 }
 
 export interface SubagentEntry {
@@ -40,30 +44,74 @@ export interface RunRecord {
   usage: any | null;
   sessionId: string | null;
   events: RunEventItem[];
+  lastTool?: RunEventItem;
   result: any | null;
   error: string | null;
   keep?: boolean;
   cancelRequested?: boolean;
   subagents?: SubagentEntry[];
+  phase?: 'waiting_quota';
+  quotaWait?: {
+    agent: string;
+    message: string;
+    threshold: number;
+    remainingPercent?: number;
+    resetAt?: number;
+    nextCheckAt?: number;
+    candidates?: Array<{ agent: string; threshold?: number; remainingPercent?: number; resetAt?: number }>;
+  };
 }
 
 interface LiveRun {
   ac: AbortController;
   done: Promise<any>;
   rec: RunRecord;
+  runsDir: string;
 }
 
 const live = new Map<string, LiveRun>(); // id -> { ac, done, rec }
 export const home = (env: NodeJS.ProcessEnv = process.env): string => env.AGENTBRIDGE_HOME || path.join(homedir(), '.agentbridge');
 export const runsDir = (env: NodeJS.ProcessEnv = process.env): string => path.join(home(env), 'runs');
+const normalizedRunsDir = (env: NodeJS.ProcessEnv): string => {
+  const dir = path.resolve(runsDir(env));
+  return process.platform === 'win32' ? dir.toLowerCase() : dir;
+};
 const idemDir = (env: NodeJS.ProcessEnv): string => path.join(home(env), 'idem');
 const ctl = (env: NodeJS.ProcessEnv, id: string, ext: string): string => path.join(runsDir(env), `${id}.${ext}`);
 const alive = (pid: number): boolean => { try { process.kill(pid, 0); return true; } catch { return false; } };
 const sha = (s: unknown): string => createHash('sha256').update(String(s)).digest('hex');
 const terminal = (s: string): boolean => s === 'done' || s === 'error' || s === 'cancelled' || s === 'lost';
+const SNIPPET_MAX = 200;
+const ansi = /\u001b(?:\[[0-?]*[ -/]*[@-~]|\][^\u0007]*(?:\u0007|\u001b\\))/g;
+const controls = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g;
+function snippet(value: unknown): string {
+  let text: string;
+  try {
+    if (value instanceof Error) text = value.message;
+    else if (typeof value === 'string') text = value;
+    else if (value && typeof value === 'object') {
+      const content = Array.isArray(value) ? value : Array.isArray((value as any).content) ? (value as any).content : null;
+      const textBlocks = content?.filter((part: any) => part && part.type === 'text' && typeof part.text === 'string');
+      if (textBlocks?.length) text = textBlocks.map((part: any) => part.text).join(' ');
+      else {
+        const seen = new WeakSet<object>();
+        text = JSON.stringify(value, (_key, item) => {
+          if (typeof item === 'string') return item.replace(ansi, '').replace(controls, ' ');
+          if (item && typeof item === 'object') {
+            if (seen.has(item)) return '[Circular]';
+            seen.add(item);
+          }
+          return item;
+        }) ?? String(value);
+      }
+    } else text = String(value ?? '');
+  } catch { text = '[unavailable]'; }
+  return text.replace(ansi, '').replace(controls, ' ').replace(/\s+/g, ' ').trim().slice(0, SNIPPET_MAX);
+}
 const rootOf = (env: NodeJS.ProcessEnv): string => env.AGENTBRIDGE_ROOT || 'local';
 const rm = (f: string): void => { try { unlinkSync(f); } catch { /* ignore */ } };
 const nap = (ms: number): void => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); };
+const clearQuotaWait = (rec: RunRecord): void => { delete rec.phase; delete rec.quotaWait; };
 
 function save(rec: RunRecord, env: NodeJS.ProcessEnv): void {
   const d = runsDir(env);
@@ -233,41 +281,141 @@ export function dispatch({ agent, model, cwd, key, prompt = '', env = process.en
   }
   const onEvent = (e: any) => {
     rec.lastEventAt = Date.now();
+    if (e.type === 'quota' && rec.state === 'running') {
+      if (e.phase === 'waiting') {
+        rec.phase = 'waiting_quota';
+        rec.quotaWait = {
+          agent: snippet(e.agent || 'all'),
+          message: snippet(e.message),
+          threshold: e.threshold,
+          ...(Number.isFinite(e.remainingPercent) ? { remainingPercent: e.remainingPercent } : {}),
+          ...(Number.isFinite(e.resetAt) ? { resetAt: e.resetAt } : {}),
+          ...(Number.isFinite(e.nextCheckAt) ? { nextCheckAt: e.nextCheckAt } : {}),
+          ...(Array.isArray(e.candidates) ? { candidates: e.candidates.slice(0, 8).map((candidate: any) => ({
+            agent: snippet(candidate.agent),
+            ...(Number.isFinite(candidate.threshold) ? { threshold: candidate.threshold } : {}),
+            ...(Number.isFinite(candidate.remainingPercent) ? { remainingPercent: candidate.remainingPercent } : {}),
+            ...(Number.isFinite(candidate.resetAt) ? { resetAt: candidate.resetAt } : {}),
+          })) } : {}),
+        };
+      } else if (e.phase === 'ready') {
+        clearQuotaWait(rec);
+        if (typeof e.agent === 'string' && e.agent !== 'all' && e.agent !== rec.agent) {
+          rec.model = null;
+          rec.sessionId = null;
+          rec.agent = e.agent;
+        }
+      }
+    }
     if (e.type === 'session') rec.sessionId = e.id;
     else if (e.type === 'pid' && e.pid) rec.childPid = e.pid;
-    else if (e.type === 'usage') rec.usage = { input: e.input, output: e.output, cost: e.cost };
+    else if (e.type === 'usage') {
+      if (e.incremental) {
+        rec.usage = {
+          input: (rec.usage?.input || 0) + (e.input || 0),
+          output: (rec.usage?.output || 0) + (e.output || 0),
+          ...((typeof rec.usage?.cost === 'number' || typeof e.cost === 'number')
+            ? { cost: (rec.usage?.cost || 0) + (e.cost || 0) }
+            : {}),
+        };
+      } else {
+        rec.usage = { input: e.input, output: e.output, ...(e.cost !== undefined ? { cost: e.cost } : {}) };
+      }
+    }
     if (e.type !== 'raw') {
-      rec.events.push({ t: rec.lastEventAt, type: e.type, ...(e.type === 'text' ? { delta: String(e.delta).slice(0, 200) } : e.type === 'tool' ? { name: e.name } : {}) });
+      const event: RunEventItem = {
+        t: rec.lastEventAt,
+        type: e.type,
+        ...(e.type === 'text' || e.type === 'thinking' ? { delta: snippet(e.delta) } : {}),
+        ...(e.type === 'quota' ? { message: snippet(e.message) } : {}),
+        ...(e.type === 'tool' ? {
+          ...(e.name !== undefined ? { name: snippet(e.name) } : {}),
+          ...((e.input ?? e.args ?? e.arguments) !== undefined ? { input: snippet(e.input ?? e.args ?? e.arguments) } : {}),
+          ...((e.output ?? e.result) !== undefined ? { output: snippet(e.output ?? e.result) } : {}),
+          ...(e.error !== undefined ? { error: snippet(e.error) } : {}),
+        } : {}),
+        ...(e.type === 'error' ? { error: snippet(e.error ?? e.message ?? e.delta ?? e) } : {}),
+      };
+      rec.events.push(event);
+      if (e.type === 'tool') rec.lastTool = event;
       if (rec.events.length > 20) rec.events.shift();
     }
     save(rec, env);
   };
   // A cancel marker written by ANY process (control file, never clobbered by our saves) is picked up here.
-  const poll = setInterval(() => { if (!ac.signal.aborted && existsSync(ctl(env, id, 'cancel'))) { rec.state = 'cancelled'; ac.abort(); } }, 200);
+  const poll = setInterval(() => {
+    if (!ac.signal.aborted && existsSync(ctl(env, id, 'cancel'))) {
+      rec.state = 'cancelled';
+      clearQuotaWait(rec);
+      try { save(rec, env); } catch { /* cancellation must still stop the worker */ }
+      ac.abort();
+    }
+  }, 200);
   (poll as any).unref?.();
   const done = Promise.resolve().then(() => exec({ onEvent, signal: ac.signal })).then((r) => {
     if (rec.state === 'cancelled') return;
-    rec.state = 'done'; rec.result = r; rec.sessionId = r.sessionId ?? rec.sessionId; rec.usage = r.usage ?? rec.usage; rec.model = r.model ?? rec.model;
+    clearQuotaWait(rec);
+    rec.state = 'done'; rec.result = r; rec.agent = r.agent ?? rec.agent; rec.sessionId = r.sessionId ?? rec.sessionId; rec.usage = r.usage ?? rec.usage; rec.model = r.model ?? rec.model;
   }, (e: any) => {
+    clearQuotaWait(rec);
     rec.state = ac.signal.aborted ? 'cancelled' : 'error'; rec.error = `${e.code ? e.code + ': ' : ''}${e.message}`;
   }).finally(() => { clearInterval(poll); rec.endedAt = Date.now(); save(rec, env); });
-  live.set(id, { ac, done, rec });
+  live.set(id, { ac, done, rec, runsDir: normalizedRunsDir(env) });
   done.finally(() => setTimeout(() => live.delete(id), 0));
   // own the events array: the live rec keeps mutating (and shifting) it while this summary is read
   return { rec: decorate({ ...rec, events: [...rec.events] }, env), deduped: false };
 }
 
-export async function waitRun(id: string, timeoutMs: number, env: NodeJS.ProcessEnv = process.env): Promise<RunRecord | null> {
+function abortError(signal: AbortSignal): Error {
+  const reason = signal.reason;
+  const objectReason = reason && typeof reason === 'object' ? reason as { code?: unknown; message?: unknown } : null;
+  const messageValue = reason instanceof Error ? reason.message : objectReason?.message ?? reason;
+  const message = messageValue === undefined ? 'wait aborted' : String(messageValue).slice(0, SNIPPET_MAX);
+  const e = new Error(message) as Error & { code: string };
+  const code = reason instanceof Error ? (reason as any).code : objectReason?.code;
+  e.code = typeof code === 'string' && ['REQUEST_CANCELLED', 'ABORTED'].includes(code) ? code : 'ABORTED';
+  return e;
+}
+
+function waitForLive(done: Promise<any>, ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) { reject(abortError(signal)); return; }
+    let settled = false;
+    const timer = setTimeout(() => finish(), ms);
+    const cleanup = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+    };
+    const finish = () => { if (settled) return; settled = true; cleanup(); resolve(); };
+    const onAbort = () => { if (settled) return; settled = true; cleanup(); reject(abortError(signal!)); };
+    signal?.addEventListener('abort', onAbort, { once: true });
+    done.then(finish, finish);
+  });
+}
+
+function delay(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) { reject(abortError(signal)); return; }
+    const timer = setTimeout(() => { cleanup(); resolve(); }, ms);
+    const onAbort = () => { cleanup(); reject(abortError(signal!)); };
+    const cleanup = () => { clearTimeout(timer); signal?.removeEventListener('abort', onAbort); };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+export async function waitRun(id: string, timeoutMs: number, env: NodeJS.ProcessEnv = process.env, signal?: AbortSignal): Promise<RunRecord | null> {
+  if (!Number.isFinite(timeoutMs) || timeoutMs < 0) throw new RangeError('timeoutMs must be finite nonnegative milliseconds');
+  if (signal?.aborted) throw abortError(signal);
   const end = Date.now() + timeoutMs;
   for (;;) {
     const l = live.get(id);
     if (l) {
-      await Promise.race([l.done, new Promise((r) => setTimeout(r, Math.max(0, end - Date.now())))]);
+      await waitForLive(l.done, Math.max(0, end - Date.now()), signal);
       return loadRun(id, env);
     }
     const r = loadRun(id, env); // owned by another bridge process: poll the registry
     if (!r || terminal(r.state) || Date.now() >= end) return r;
-    await new Promise((res) => setTimeout(res, 250));
+    await delay(Math.min(250, Math.max(0, end - Date.now())), signal);
   }
 }
 
@@ -286,8 +434,13 @@ export function cancelRun(id: string, env: NodeJS.ProcessEnv = process.env): { r
   if (l) {
     if (l.rec.state !== 'running') return { rec: decorate({ ...l.rec }, env) }; // already finished: no state flip, no stray marker
     l.rec.state = 'cancelled';
-    writeFileSync(ctl(env, id, 'cancel'), '');
-    l.ac.abort();
+    clearQuotaWait(l.rec);
+    try {
+      writeFileSync(ctl(env, id, 'cancel'), '');
+      save(l.rec, env);
+    } finally {
+      l.ac.abort();
+    }
     return { rec: decorate({ ...l.rec }, env) };
   }
   if (a.rec.state === 'running') writeFileSync(ctl(env, id, 'cancel'), ''); // owner (another process) polls this marker
@@ -304,9 +457,27 @@ export function setKeep(id: string, keep: boolean, env: NodeJS.ProcessEnv = proc
 
 /** Abort every locally-owned running run and wait (bounded) for them to settle. Called on stdin close / exit. */
 export async function abortAll(env: NodeJS.ProcessEnv = process.env, waitMs = 4000): Promise<number> {
-  const ls = [...live.values()];
-  for (const l of ls) { l.rec.state = 'cancelled'; l.rec.error = 'bridge shutting down'; l.ac.abort(); }
-  await Promise.race([Promise.all(ls.map((l) => l.done)), new Promise((r) => setTimeout(r, waitMs))]);
+  const targetDir = normalizedRunsDir(env);
+  const targetRoot = rootOf(env);
+  const ls = [...live.values()].filter((l) => l.runsDir === targetDir && (l.rec.root || 'local') === targetRoot && l.rec.state === 'running');
+  for (const l of ls) {
+    l.rec.state = 'cancelled';
+    clearQuotaWait(l.rec);
+    l.rec.error = 'bridge shutting down';
+    try { save(l.rec, env); } catch { /* shutdown must still stop the worker */ }
+    l.ac.abort();
+  }
+  if (ls.length) {
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      await Promise.race([
+        Promise.all(ls.map((l) => l.done)),
+        new Promise<void>((resolve) => { timer = setTimeout(resolve, waitMs); }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
   return ls.length;
 }
 
@@ -324,14 +495,18 @@ export interface RunSummary {
   childPid: number | null;
   keep: boolean;
   lastEvents: RunEventItem[];
+  lastTool: RunEventItem | null;
   error: string | null;
   subagents?: SubagentEntry[];
+  phase?: 'waiting_quota';
+  quotaWait?: RunRecord['quotaWait'];
 }
 
 export function summarize(r: RunRecord): RunSummary;
 export function summarize(r: RunRecord | null): RunSummary | null;
 export function summarize(r: RunRecord | null): RunSummary | null {
   if (!r) return null;
+  const lastTool = r.lastTool || [...(r.events || [])].reverse().find((e) => e.type === 'tool');
   return {
     id: r.id,
     key: r.key,
@@ -346,6 +521,9 @@ export function summarize(r: RunRecord | null): RunSummary | null {
     childPid: r.childPid,
     keep: !!r.keep,
     lastEvents: (r.events || []).slice(-5),
+    lastTool: lastTool ? { ...lastTool } : null,
+    ...(r.phase ? { phase: r.phase } : {}),
+    ...(r.quotaWait ? { quotaWait: { ...r.quotaWait } } : {}),
     error: r.error,
     subagents: r.subagents || [],
   };

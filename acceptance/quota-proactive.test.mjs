@@ -31,12 +31,12 @@ test('parseAnthropicUsage extracts 5h and 7d window usage and resets correctly',
   };
 
   const parsed = parseAnthropicUsage(fixture);
-  assert.equal(parsed.fiveHourPercent, 43);
-  assert.equal(parsed.sevenDayPercent, 15);
+  assert.equal(parsed.fiveHourPercent, 42.6);
+  assert.equal(parsed.sevenDayPercent, 15.2);
   assert.equal(typeof parsed.fiveHourResetsAt, 'number');
   assert.equal(typeof parsed.sevenDayResetsAt, 'number');
-  assert.equal(parsed.fiveHour?.usedPercent, 43);
-  assert.equal(parsed.sevenDay?.usedPercent, 15);
+  assert.equal(parsed.fiveHour?.usedPercent, 42.6);
+  assert.equal(parsed.sevenDay?.usedPercent, 15.2);
 });
 
 test('parseCodexUsage extracts primary window %, window duration, and reset timestamp', () => {
@@ -54,7 +54,7 @@ test('parseCodexUsage extracts primary window %, window duration, and reset time
   };
 
   const parsed = parseCodexUsage(fixture);
-  assert.equal(parsed.primaryPercent, 78);
+  assert.equal(parsed.primaryPercent, 78.4);
   assert.equal(parsed.secondaryPercent, 32);
   assert.equal(parsed.windowMinutes, 300);
   assert.equal(parsed.resetsAt, 1791500000000);

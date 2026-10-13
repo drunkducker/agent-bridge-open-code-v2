@@ -9,6 +9,7 @@ import type {
   EventError,
   EventRaw,
   EventFallback,
+  EventQuota,
 } from '../core/events.js';
 
 export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
@@ -45,6 +46,27 @@ export interface SessionConfig {
 export interface FallbackTarget {
   agent: string;
   model?: string;
+  minRemainingPercent?: number;
+}
+
+export interface QuotaPolicy {
+  minRemainingPercent: number;
+  waitForReset?: boolean;
+  maxWaitMs?: number;
+}
+
+export interface QuotaRouteCandidate {
+  id: string;
+  agent: string;
+  model?: string;
+  minRemainingPercent?: number;
+  env?: NodeJS.ProcessEnv;
+}
+
+export interface QuotaRouteSelection extends QuotaRouteCandidate {
+  index: number;
+  env: NodeJS.ProcessEnv;
+  health?: import('../quota/proactive.js').ProactiveQuotaHealth;
 }
 
 export interface FallbackAttempt {
@@ -75,6 +97,9 @@ export interface RunOptions {
   isolated?: boolean;
   fallback?: Array<string | FallbackTarget>;
   fallbackOn?: FallbackErrorCode[];
+  quotaPolicy?: QuotaPolicy;
+  dangerouslySkipPermissions?: boolean;
+  yolo?: boolean;
   images?: ImageData[];
   harness?: HarnessKind;
   offline?: boolean;
@@ -130,6 +155,7 @@ export type {
   EventError,
   EventRaw,
   EventFallback,
+  EventQuota,
 };
 
 export interface AgentAdapter {

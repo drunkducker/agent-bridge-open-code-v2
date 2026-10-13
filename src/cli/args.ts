@@ -31,6 +31,9 @@ export const BOOL = new Set([
   'login',
   'no-share',
   'accept-tos-risk',
+  'wait-for-quota',
+  'dangerously-skip-permissions',
+  'yolo',
 ]);
 const SHORT: Record<string, string> = {
   m: 'model',

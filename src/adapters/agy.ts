@@ -42,9 +42,14 @@ const busy = new Set<string>();
 const bad = (m: string) => new AgentError('BAD_OPTION', m, { agent: NAME });
 
 export function findBinary(env: NodeJS.ProcessEnv = process.env): string | null {
+  // Honor an explicit binary override as an account/runtime selection. If it is invalid,
+  // fail closed rather than silently running a different agy found on PATH or in defaults.
+  if (Object.prototype.hasOwnProperty.call(env, 'AGY_BIN')) {
+    const explicit = env.AGY_BIN?.trim();
+    return explicit ? resolveBinary(explicit, env) : null;
+  }
   const local = env.LOCALAPPDATA || path.join(homedir(), 'AppData', 'Local');
   const cands = [
-    env.AGY_BIN,
     path.join(local, 'agy', 'bin', 'agy.exe'),
     path.join(homedir(), '.local', 'bin', 'agy'),
     path.join(homedir(), '.gemini', 'antigravity-cli', 'bin', 'agy'),
@@ -340,7 +345,7 @@ const adapter: AgentAdapter = {
               const x: any = usageOf(u.usage);
               usageSeen = true;
               for (const k of Object.keys(sum)) sum[k] += x[k];
-              yield ev.usage(x.input, x.output) as any;
+              yield ev.usage(x.input, x.output, undefined, true) as any;
             }
           } else if (u.step_type === 'tool') {
             const info = u.tool_info || {};

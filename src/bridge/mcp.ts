@@ -23,7 +23,12 @@ import {
   checkMessages,
 } from './runs.js';
 import { resolvePermissionLevel } from '../core/config.js';
+import { AgentError } from '../core/errors.js';
+import { EventQuota } from '../core/events.js';
+import { QuotaWaitState, selectQuotaRoute } from '../quota/routing.js';
+import { QuotaPolicy, QuotaRouteCandidate, QuotaRouteSelection } from '../types/index.js';
 import { VERSION } from '../core/version.js';
+import { supportsProactiveQuota } from '../quota/proactive.js';
 
 const BUILTIN_AGENTS = ['claude', 'codex', 'opencode', 'agy', 'pi', 'cursor', 'grok', 'gemini', 'devin', 'acp'];
 const agentList = (env: NodeJS.ProcessEnv = process.env) => [...BUILTIN_AGENTS, ...endpointNames(env)];
@@ -42,9 +47,11 @@ export const DEFAULT_MODEL: Record<string, string> = {
   acp: 'default',
 };
 const DEFAULT_TIMEOUT_S = 300;
+export const MAX_WAIT_SECONDS = 30;
 const SUPPORTED = ['2025-06-18', '2025-03-26', '2024-11-05'];
 const META = '[agentbridge] ';
 const sha = (t: any) => createHash('sha256').update(String(t ?? '')).digest('hex');
+const badOption = (message: string) => new AgentError('BAD_OPTION', message);
 
 export interface Attestation {
   agent: string;
@@ -110,16 +117,41 @@ export const curDepth = (env: NodeJS.ProcessEnv = process.env): number => {
   return Number.isFinite(n) && n >= 0 ? n : 0;
 };
 
+const subdelegationAllowed = (env: NodeJS.ProcessEnv): boolean => env.AGENTBRIDGE_SUBDELEGATION !== 'false';
+
 function askSchema(agent: string) {
   return {
     name: `ask_${agent}`,
     description: isEndpoint(agent)
-      ? `Send a prompt to the "${agent}" chat-model endpoint (HTTP, OpenAI/Anthropic-compatible; plain chat, no tools or file access) and return its answer, session id and token usage. Omit model to use the endpoint default.`
-      : `Delegate a prompt to the ${agent} coding agent (a separate process) and return its final answer, session id and token usage.`,
+      ? `Send a prompt to the "${agent}" chat-model endpoint (HTTP, OpenAI/Anthropic-compatible; plain chat, no tools or file access) and return its answer, session id and token usage. Omit model to use the endpoint default. For work likely to take over 30 seconds, use dispatch_${agent} and wait_run.`
+    : `Delegate a prompt to the ${agent} coding agent (a separate process) and return its final answer, session id and token usage. For work likely to take over 30 seconds, use dispatch_${agent} and wait_run.`,
     inputSchema: {
       type: 'object',
       properties: {
         prompt: { type: 'string', description: 'Prompt for the agent' },
+        subdelegation: {
+          type: 'boolean',
+          description: 'Allow this agent to delegate work to its own agents (default true). Set false to require it to do the work itself.',
+        },
+        quotaPolicy: {
+          type: 'object',
+          description: 'Select an ordered agent route using measured remaining quota; optional cancelable wait for a reset.',
+          properties: {
+            minRemainingPercent: { type: 'number', minimum: 0, maximum: 100, description: 'Minimum measured primary-window quota remaining (inclusive).' },
+            waitForReset: { type: 'boolean', description: 'Wait cancelably for the earliest route to become eligible (default false).' },
+            maxWaitMs: { type: 'number', exclusiveMinimum: 0, description: 'Optional maximum time to wait for quota, independent of agent execution timeout.' },
+          },
+          additionalProperties: false,
+          required: ['minRemainingPercent'],
+        },
+        dangerouslySkipPermissions: {
+          type: 'boolean',
+          description: 'Claude only: explicitly bypass permission prompts. Requires effective full permissions and the operator ceiling.',
+        },
+        yolo: {
+          type: 'boolean',
+          description: 'Codex only: run with Codex --yolo, bypassing approval prompts and sandbox restrictions. Requires permissions="full" and the configured operator ceiling.',
+        },
         model: { type: 'string', description: 'Default: cheapest model for the agent' },
         effort: { type: 'string', enum: ['low', 'medium', 'high', 'xhigh', 'max'] },
         permissions: {
@@ -151,9 +183,23 @@ function askSchema(agent: string) {
         fallback: {
           type: 'array',
           maxItems: 5,
-          items: { type: 'string' },
+          items: {
+            oneOf: [
+              { type: 'string' },
+              {
+                type: 'object',
+                properties: {
+                  agent: { type: 'string', description: 'Fallback provider name; use the string form for quota syntax such as codex@15:model.' },
+                  model: { type: 'string' },
+                  minRemainingPercent: { type: 'number', minimum: 0, maximum: 100, description: 'Per-route measured minimum quota remaining; requires quotaPolicy.' },
+                },
+                required: ['agent'],
+                additionalProperties: false,
+              },
+            ],
+          },
           description:
-            'Agents to try, in order, if this one fails with fallbackOn (default RATE_LIMITED): "codex" or "ollama:glm-5.3-flash:cloud". Each starts a new session with its own model; not used if this agent already ran tools with edit/full permissions.',
+            'Agents to try, in order, if this one fails with fallbackOn (default RATE_LIMITED): "codex", "codex@15:model", "ollama:glm-5.3-flash:cloud", or {agent, model?, minRemainingPercent?}. Per-route quota thresholds require quotaPolicy. Each starts a new session with its own model; not used if this agent already ran tools with edit/full permissions.',
         },
         fallbackOn: {
           type: 'array',
@@ -192,7 +238,7 @@ export function toolSchema(agent: string, kind = 'ask'): any {
   const s: any = askSchema(agent);
   if (kind === 'dispatch') {
     s.name = `dispatch_${agent}`;
-    s.description = `Start ${agent} asynchronously; returns a run id immediately. Use wait_run/check_run/cancel_run.`;
+    s.description = `Start ${agent} asynchronously; returns a run id immediately. Use wait_run/check_run/cancel_run. For work likely to take over 30 seconds, dispatch and wait with wait_run.`;
     s.inputSchema.properties.idempotencyKey = {
       type: 'string',
       description: 'Repeating a dispatch with the same key returns the existing run',
@@ -204,10 +250,10 @@ export function toolSchema(agent: string, kind = 'ask'): any {
 export const RUN_TOOLS = [
   {
     name: 'wait_run',
-    description: 'Wait for an async run to finish (or time out) and return its state/result.',
+    description: 'Wait for an async run to finish (or time out) and return its state/result. Default wait is 30 seconds; requests above 30 seconds are capped at 30 seconds per call. Call again to continue waiting.',
     inputSchema: {
       type: 'object',
-      properties: { id: { type: 'string' }, timeoutSeconds: { type: 'number' } },
+      properties: { id: { type: 'string' }, timeoutSeconds: { type: 'number', exclusiveMinimum: 0, description: 'Default 30 seconds; each wait is capped at 30 seconds.' } },
       required: ['id'],
     },
   },
@@ -314,6 +360,7 @@ export const QUOTA_TOOLS = [
       type: 'object',
       properties: {
         agent: { type: 'string', description: 'Agent name (e.g. "codex", "claude")' },
+        model: { type: 'string', description: 'Optional model name for model-specific provider quota' },
         thresholdPercent: { type: 'number', description: 'Maximum acceptable used percent before throttling (default 95)' },
       },
       required: ['agent'],
@@ -333,9 +380,11 @@ export const allTools = (env: NodeJS.ProcessEnv = process.env): any[] => {
     ceiling === 'read-only' || ceiling === 'plan'
       ? CHECKPOINT_TOOLS.filter((t) => t.name !== 'checkpoint_rollback')
       : CHECKPOINT_TOOLS;
+  const spawningTools = subdelegationAllowed(env)
+    ? [...L.map((a) => toolSchema(a)), ...L.map((a) => toolSchema(a, 'dispatch'))]
+    : [];
   return [
-    ...L.map((a) => toolSchema(a)),
-    ...L.map((a) => toolSchema(a, 'dispatch')),
+    ...spawningTools,
     ...RUN_TOOLS,
     ...cpTools,
     ...QUOTA_TOOLS,
@@ -347,7 +396,7 @@ export function resolvePerms(requested?: string, env: NodeJS.ProcessEnv = proces
     const { permissions } = resolvePermissionLevel(requested as any, { env, cwd });
     return permissions;
   } catch (err: any) {
-    throw new Error(err.message);
+    throw badOption(err.message);
   }
 }
 
@@ -359,31 +408,86 @@ function safeEndpointModel(agent: string, env: NodeJS.ProcessEnv) {
   }
 }
 
-function prepare(agent: string, args: any, env: NodeJS.ProcessEnv) {
+export function prepare(agent: string, args: any, env: NodeJS.ProcessEnv = process.env) {
+  if (!subdelegationAllowed(env)) throw badOption('subdelegation is disabled by AGENTBRIDGE_SUBDELEGATION=false');
   const depth = curDepth(env),
     max = maxDepth(env);
   if (depth >= max) {
-    throw new Error(
+    throw badOption(
       `Recursion guard: AGENTBRIDGE_DEPTH=${depth} has reached max ${max}; refusing to spawn another agent`
     );
   }
-  if (!args || typeof args !== 'object') throw new Error('arguments must be an object');
+  if (!args || typeof args !== 'object' || Array.isArray(args)) throw badOption('arguments must be an object');
+  if (typeof args.prompt !== 'string' || !args.prompt.trim()) throw badOption('prompt must be a non-empty string');
+  if (Object.prototype.hasOwnProperty.call(args, 'subdelegation') && typeof args.subdelegation !== 'boolean') {
+    throw badOption('subdelegation must be a boolean');
+  }
+  let quotaPolicy: QuotaPolicy | undefined;
+  if (Object.prototype.hasOwnProperty.call(args, 'quotaPolicy')) {
+    const raw = args.quotaPolicy;
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw badOption('quotaPolicy must be an object');
+    const unknownPolicyKeys = Object.keys(raw).filter((key) => !['minRemainingPercent', 'waitForReset', 'maxWaitMs'].includes(key));
+    if (unknownPolicyKeys.length) throw badOption(`quotaPolicy has unknown field(s): ${unknownPolicyKeys.join(', ')}`);
+    if (typeof raw.minRemainingPercent !== 'number' || !Number.isFinite(raw.minRemainingPercent) || raw.minRemainingPercent < 0 || raw.minRemainingPercent > 100) {
+      throw badOption('quotaPolicy.minRemainingPercent must be a finite percentage in [0,100]');
+    }
+    if (Object.prototype.hasOwnProperty.call(raw, 'waitForReset') && typeof raw.waitForReset !== 'boolean') {
+      throw badOption('quotaPolicy.waitForReset must be a boolean');
+    }
+    if (Object.prototype.hasOwnProperty.call(raw, 'maxWaitMs') && (typeof raw.maxWaitMs !== 'number' || !Number.isFinite(raw.maxWaitMs) || raw.maxWaitMs <= 0)) {
+      throw badOption('quotaPolicy.maxWaitMs must be a positive finite number');
+    }
+    quotaPolicy = { minRemainingPercent: raw.minRemainingPercent, ...(raw.waitForReset !== undefined ? { waitForReset: raw.waitForReset } : {}), ...(raw.maxWaitMs !== undefined ? { maxWaitMs: raw.maxWaitMs } : {}) };
+  }
+  if (Object.prototype.hasOwnProperty.call(args, 'dangerouslySkipPermissions') && typeof args.dangerouslySkipPermissions !== 'boolean') {
+    throw badOption('dangerouslySkipPermissions must be a boolean');
+  }
+  if (Object.prototype.hasOwnProperty.call(args, 'yolo') && typeof args.yolo !== 'boolean') {
+    throw badOption('yolo must be a boolean');
+  }
   const perms = resolvePerms(args.permissions, env);
+  if (args.dangerouslySkipPermissions === true) {
+    if (agent !== 'claude') throw badOption('dangerouslySkipPermissions is only supported for Claude');
+    if (perms !== 'full') throw badOption('dangerouslySkipPermissions requires effective full permissions');
+  }
+  if (args.yolo === true) {
+    if (agent !== 'codex') throw badOption('yolo is only supported for Codex');
+    if (perms !== 'full') throw badOption('yolo requires effective full permissions');
+  }
   const mk = (a: string) => `AGENTBRIDGE_MODEL_${a.toUpperCase()}`;
   const model = args.model ?? env[mk(agent)] ?? (isEndpoint(agent) ? safeEndpointModel(agent, env) : DEFAULT_MODEL[agent]);
   const opts: any = { prompt: args.prompt, permissions: perms, model };
   for (const k of ['effort', 'cwd', 'session', 'systemPrompt', 'harness', 'offline']) {
     if (args[k] != null) opts[k] = args[k];
   }
+  if (quotaPolicy) opts.quotaPolicy = quotaPolicy;
+  if (args.dangerouslySkipPermissions === true) opts.dangerouslySkipPermissions = true;
+  if (args.yolo === true) opts.yolo = true;
+  const childAllowsSubdelegation = subdelegationAllowed(env) && args.subdelegation !== false;
+  if (!childAllowsSubdelegation) {
+    const instruction = 'Do this task yourself. Do not delegate, spawn subagents, or call any tool that starts another agent.';
+    opts.systemPrompt = [opts.systemPrompt, instruction].filter(Boolean).join('\n\n');
+  }
   if (env.AGENTBRIDGE_CHILD_CWD) opts.cwd = env.AGENTBRIDGE_CHILD_CWD;
-  const rawTimeout = args.timeoutSeconds ?? args.timeout;
-  let ts = Number(env.AGENTBRIDGE_DEFAULT_TIMEOUT_S) || DEFAULT_TIMEOUT_S;
-  if (rawTimeout != null) {
-    const num = Number(rawTimeout);
-    if (!isNaN(num) && num > 0) {
-      ts = num >= 1000 ? Math.round(num / 1000) : num;
+  let ts = DEFAULT_TIMEOUT_S;
+  if (env.AGENTBRIDGE_DEFAULT_TIMEOUT_S !== undefined) {
+    const configured = Number(env.AGENTBRIDGE_DEFAULT_TIMEOUT_S);
+    if (!Number.isFinite(configured) || configured <= 0) {
+      throw badOption('AGENTBRIDGE_DEFAULT_TIMEOUT_S must be a finite positive number of seconds');
+    }
+    ts = configured;
+  }
+  const hasTimeoutSeconds = Object.prototype.hasOwnProperty.call(args, 'timeoutSeconds');
+  const hasTimeoutAlias = Object.prototype.hasOwnProperty.call(args, 'timeout');
+  for (const key of ['timeoutSeconds', 'timeout'] as const) {
+    if (!Object.prototype.hasOwnProperty.call(args, key)) continue;
+    const value = args[key];
+    if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+      throw badOption(`${key} must be a finite positive number`);
     }
   }
+  const rawTimeout = hasTimeoutSeconds ? args.timeoutSeconds : hasTimeoutAlias ? args.timeout : undefined;
+  if (rawTimeout !== undefined) ts = rawTimeout >= 1000 ? rawTimeout / 1000 : rawTimeout;
   opts.timeoutMs = Math.round(ts * 1000);
   const childDepth = depth + 1;
   const models = Object.fromEntries(agentList(env).filter((a) => env[mk(a)]).map((a) => [mk(a), env[mk(a)]]));
@@ -391,33 +495,49 @@ function prepare(agent: string, args: any, env: NodeJS.ProcessEnv) {
     AGENTBRIDGE_DEPTH: String(childDepth),
     AGENTBRIDGE_MAX_DEPTH: String(max),
     AGENTBRIDGE_PERMS: perms,
+    AGENTBRIDGE_SUBDELEGATION: String(childAllowsSubdelegation),
     ...models,
   };
   return { opts, perms, childDepth, max, model };
 }
 
-async function execute(agent: string, args: any, ctx: any): Promise<any> {
-  const { env } = ctx;
-  const chain = (args.fallback ?? []).map(parseFallbackTarget);
-  const on = args.fallbackOn ?? ['RATE_LIMITED'];
+function fallbackOptions(args: any, env: NodeJS.ProcessEnv) {
   if (args.fallback != null && (!Array.isArray(args.fallback) || args.fallback.length > 5)) {
-    throw new Error('fallback must be an array of at most 5 agents');
+    throw badOption('fallback must be an array of at most 5 agents');
   }
+  const chain = (args.fallback ?? []).map(parseFallbackTarget);
+  for (const target of chain) {
+    if (target.minRemainingPercent !== undefined) {
+      if (typeof target.minRemainingPercent !== 'number' || !Number.isFinite(target.minRemainingPercent) || target.minRemainingPercent < 0 || target.minRemainingPercent > 100) {
+        throw badOption('fallback minRemainingPercent must be a finite percentage in [0,100]');
+      }
+      if (!args.quotaPolicy) throw badOption('fallback minRemainingPercent requires quotaPolicy');
+      if (!supportsProactiveQuota(target.agent)) throw badOption(`Quota thresholds are unavailable for fallback agent "${target.agent}"`);
+    }
+  }
+  const on = args.fallbackOn ?? ['RATE_LIMITED'];
   if (
     !Array.isArray(on) ||
     on.some((c) => !['RATE_LIMITED', 'NOT_LOGGED_IN', 'NOT_INSTALLED', 'TIMEOUT', 'AGENT_FAILED'].includes(c))
   ) {
-    throw new Error('fallbackOn has an unsupported code');
+    throw badOption('fallbackOn has an unsupported code');
   }
   for (const t of chain) {
     if (!agentList(env).includes(t.agent)) {
-      throw new Error(`fallback agent "${t.agent}" is not one of: ${agentList(env).join(', ')}`);
+      throw badOption(`fallback agent "${t.agent}" is not one of: ${agentList(env).join(', ')}`);
     }
   }
+  return { chain, on };
+}
+
+async function execute(agent: string, args: any, ctx: any): Promise<any> {
+  const { env } = ctx;
+  const { chain, on } = fallbackOptions(args, env);
   const { fallback, fallbackOn, ...base } = args;
   void fallback;
   void fallbackOn;
   const perms = resolvePerms(base.permissions, env);
+  if (base.quotaPolicy) return executeQuotaRouted(agent, base, chain, on, perms, ctx);
   const attempts: any[] = [];
   let cur = { agent, args: base };
   for (let i = 0; ; i++) {
@@ -455,7 +575,7 @@ async function execute(agent: string, args: any, ctx: any): Promise<any> {
         ...(e.retryAfterMs != null ? { retryAfterMs: e.retryAfterMs } : {}),
       });
       ctx.onEvent?.(ev.fallback(cur.agent, next.agent, e.code, e.message));
-      const { effort, session, model, ...keep } = base;
+      const { effort, session, model, yolo, ...keep } = base;
       void effort;
       void model;
       cur = {
@@ -463,9 +583,134 @@ async function execute(agent: string, args: any, ctx: any): Promise<any> {
         args: {
           ...keep,
           ...(next.model ? { model: next.model } : {}),
+          ...(yolo && next.agent === 'codex' ? { yolo: true } : {}),
           ...(session?.mode === 'ephemeral' ? { session } : {}),
         },
       };
+    }
+  }
+}
+
+async function quotaRouteSelection(
+  candidates: QuotaRouteCandidate[],
+  quotaPolicy: QuotaPolicy,
+  ctx: any,
+  excluded: Set<string>,
+  cooldowns: Map<string, number>,
+  waitState: QuotaWaitState,
+  offline = false
+): Promise<QuotaRouteSelection> {
+  const iterator = selectQuotaRoute({
+    candidates,
+    quotaPolicy,
+    env: { ...(ctx.env || {}), ...(offline ? { AGENTBRIDGE_OFFLINE: '1' } : {}) },
+    signal: ctx.signal,
+    exclude: excluded,
+    cooldowns,
+    waitState,
+  });
+  for (;;) {
+    const step = await iterator.next();
+    if (step.done) return step.value;
+    ctx.onEvent?.(step.value as EventQuota);
+  }
+}
+
+async function executeQuotaRouted(
+  agent: string,
+  base: any,
+  chain: Array<{ agent: string; model?: string; minRemainingPercent?: number }>,
+  on: string[],
+  perms: string,
+  ctx: any
+): Promise<any> {
+  const defaultRouteModel = (candidateAgent: string): string | undefined => {
+    if (candidateAgent !== 'agy' && candidateAgent !== 'gemini') return undefined;
+    const configured = ctx.env?.[`AGENTBRIDGE_MODEL_${candidateAgent.toUpperCase()}`];
+    return configured || DEFAULT_MODEL[candidateAgent];
+  };
+  const routes: Array<{ agent: string; model?: string; minRemainingPercent?: number; id: string }> =
+    [{ agent, model: base.model }, ...chain].map((route, index) => ({
+      ...route,
+      model: route.model || defaultRouteModel(route.agent),
+      id: `c${index}`,
+    }));
+  const candidates: QuotaRouteCandidate[] = routes.map(({ id, agent: candidateAgent, model, minRemainingPercent }) => ({
+    id,
+    agent: candidateAgent,
+    ...(model ? { model } : {}),
+    ...(minRemainingPercent !== undefined ? { minRemainingPercent } : {}),
+  }));
+  const excluded = new Set<string>();
+  const cooldowns = new Map<string, number>();
+  const waitState: QuotaWaitState = { remainingMs: base.quotaPolicy.maxWaitMs };
+  const attempts: any[] = [];
+  let pendingTransition: { from: string; code: string; message: string } | null = null;
+  let firstSelection = true;
+  for (;;) {
+    const selection = await quotaRouteSelection(candidates, base.quotaPolicy, ctx, excluded, cooldowns, waitState, base.offline === true);
+    const route = routes[selection.index];
+    if (!route || route.id !== selection.id) throw new AgentError('AGENT_FAILED', 'Quota selector returned an unknown route');
+    if (firstSelection && selection.index > 0) {
+      for (const skipped of routes.slice(0, selection.index)) {
+        attempts.push({ agent: skipped.agent, code: 'QUOTA_ROUTED', message: 'Skipped by quota eligibility policy' });
+      }
+      pendingTransition = { from: agent, code: 'QUOTA_ROUTED', message: 'Selected a route with sufficient quota' };
+    }
+    firstSelection = false;
+    if (pendingTransition) {
+      ctx.onEvent?.(ev.fallback(pendingTransition.from, route.agent, pendingTransition.code, pendingTransition.message));
+      pendingTransition = null;
+    }
+    const { effort, session, model, ...keep } = base;
+    void effort;
+    void model;
+    const routeArgs = route.id === 'c0'
+      ? { ...base, ...(route.model ? { model: route.model } : {}) }
+      : { ...keep, ...(route.model ? { model: route.model } : {}), ...(session?.mode === 'ephemeral' ? { session } : {}) };
+    delete routeArgs.fallback;
+    delete routeArgs.fallbackOn;
+    // The bridge has already selected and gated this candidate. Keep the policy at this routing layer.
+    delete routeArgs.quotaPolicy;
+    if (route.agent !== 'claude') delete routeArgs.dangerouslySkipPermissions;
+    if (route.agent !== 'codex') delete routeArgs.yolo;
+    let tools = 0;
+    try {
+      const st = await executeOne(route.agent, routeArgs, {
+        ...ctx,
+        env: selection.env,
+        onEvent: (event: any) => {
+          if (event.type === 'tool') tools++;
+          ctx.onEvent?.(event);
+        },
+      });
+      const result = { ...st, agent: route.agent };
+      return attempts.length || selection.index > 0
+        ? { ...result, fallback: { used: route.agent, attempts, contextLost: selection.index > 0 && (base.session?.mode === 'continue' || base.session?.mode === 'fork') } }
+        : result;
+    } catch (error: any) {
+      if (!on.includes(error?.code) || ctx.signal?.aborted) throw error;
+      const hasOtherCandidate = routes.some((candidate) => candidate.id !== route.id && !excluded.has(candidate.id));
+      if (tools && perms !== 'read-only' && perms !== 'plan' && (hasOtherCandidate || base.quotaPolicy.waitForReset)) {
+        throw Object.assign(error, {
+          fallbackSkipped: `${route.agent} already ran tools under "${perms}" permissions; not repeating the task on another route`,
+        });
+      }
+      if (error?.code === 'RATE_LIMITED') {
+        if (!hasOtherCandidate && !base.quotaPolicy.waitForReset) throw error;
+        const cooldownMs = Number.isFinite(error.retryAfterMs) && error.retryAfterMs > 0 ? error.retryAfterMs : 30_000;
+        cooldowns.set(route.id, Date.now() + cooldownMs);
+      } else {
+        if (!hasOtherCandidate) throw error;
+        excluded.add(route.id);
+      }
+      attempts.push({
+        agent: route.agent,
+        code: error.code,
+        message: String(error.message).slice(0, 300),
+        ...(error.retryAfterMs != null ? { retryAfterMs: error.retryAfterMs } : {}),
+      });
+      pendingTransition = { from: route.agent, code: error.code, message: String(error.message).slice(0, 300) };
     }
   }
 }
@@ -509,22 +754,23 @@ async function executeOne(agent: string, args: any, { env, onEvent, signal }: an
     AGENTBRIDGE_DEPTH: String(childDepth),
     AGENTBRIDGE_MAX_DEPTH: String(max),
     AGENTBRIDGE_PERMS: perms,
+    AGENTBRIDGE_SUBDELEGATION: opts.env.AGENTBRIDGE_SUBDELEGATION,
     AGENTBRIDGE_ATTEST_KEY: attestKey(env),
-    ...models,
+    ...Object.fromEntries(Object.entries(models).map(([name, value]) => [`AGENTBRIDGE_MODEL_${name.toUpperCase()}`, value])),
   };
   if (env.AGENTBRIDGE_HOME) grandchildEnv.AGENTBRIDGE_HOME = env.AGENTBRIDGE_HOME;
   if (env.AGENTBRIDGE_ATTEST_BIND) grandchildEnv.AGENTBRIDGE_ATTEST_BIND = env.AGENTBRIDGE_ATTEST_BIND;
   if (env.AGENTBRIDGE_ROOT) grandchildEnv.AGENTBRIDGE_ROOT = env.AGENTBRIDGE_ROOT;
   if (env.AGENTBRIDGE_DEFAULT_TIMEOUT_S) grandchildEnv.AGENTBRIDGE_DEFAULT_TIMEOUT_S = env.AGENTBRIDGE_DEFAULT_TIMEOUT_S;
   if (args.skills != null) {
-    if (typeof args.skills !== 'boolean') throw new Error('skills must be a boolean');
+    if (typeof args.skills !== 'boolean') throw badOption('skills must be a boolean');
     opts.skills = args.skills;
   }
   if (args.transport != null) {
     opts.transport = args.transport;
   }
   if (args.mcpPassthrough != null && !(Array.isArray(args.mcpPassthrough) && args.mcpPassthrough.every((x: any) => typeof x === 'string'))) {
-    throw new Error('mcpPassthrough must be an array of server names');
+    throw badOption('mcpPassthrough must be an array of server names');
   }
   const { servers: passthroughServers, drops } = resolvePassthrough({
     passthrough: args.mcpPassthrough,
@@ -546,6 +792,8 @@ async function executeOne(agent: string, args: any, { env, onEvent, signal }: an
       `mcp_servers.${serverName}.bearer_token_env_var="AGENTBRIDGE_ATTEST_KEY"`,
       '-c',
       `mcp_servers.${serverName}.default_tools_approval_mode="approve"`,
+      '-c',
+      `mcp_servers.${serverName}.tool_timeout_sec=300`,
     ];
     for (const [name, srv] of Object.entries<any>(passthroughServers)) {
       const k = `mcp_servers.${name}`;
@@ -566,6 +814,7 @@ async function executeOne(agent: string, args: any, { env, onEvent, signal }: an
       attestBind: env.AGENTBRIDGE_ATTEST_BIND,
       root: env.AGENTBRIDGE_ROOT,
       defaultTimeoutS: env.AGENTBRIDGE_DEFAULT_TIMEOUT_S,
+      subdelegation: opts.env.AGENTBRIDGE_SUBDELEGATION === 'true',
     });
     const combinedServers = { ...childBridge, ...passthroughServers };
     if (Object.keys(combinedServers).length) {
@@ -615,7 +864,50 @@ const asResult = (st: any, env: NodeJS.ProcessEnv) => {
     structuredContent: { ...st, attestation },
   };
 };
-const errResult = (m: string) => ({ isError: true, content: [{ type: 'text', text: m }] });
+const errResult = (m: string, error?: any) => ({
+  isError: true,
+  content: [{ type: 'text', text: m }],
+  ...(error ? { structuredContent: { error } } : {}),
+});
+
+const bounded = (value: unknown, max = 500): string | undefined =>
+  value == null ? undefined : String(value).slice(0, max);
+
+function structuredError(error: any, signal?: AbortSignal) {
+  const cancelled = signal?.aborted === true;
+  const reason = signal?.reason;
+  const code = cancelled ? (error?.code === 'REQUEST_CANCELLED' ? 'REQUEST_CANCELLED' : 'ABORTED') : error?.code || 'AGENT_FAILED';
+  const message = cancelled
+    ? bounded(typeof reason === 'string' ? reason : reason?.message, 500) || 'MCP request cancelled'
+    : bounded(error?.message, 500) || 'MCP tool call failed';
+  const detail: Record<string, any> = {};
+  if (cancelled) {
+    detail.cause = 'REQUEST_CANCELLED';
+    detail.reason = bounded(typeof reason === 'string' ? reason : reason?.message, 300) || 'MCP request cancelled';
+  } else if (error?.cause != null) detail.cause = bounded(error.cause, 200);
+  if (!cancelled && code === 'AGENT_FAILED' && Number.isFinite(error?.exitCode) && error.exitCode !== 0) detail.cause = 'CHILD_DIED';
+  if (error?.agent != null) detail.agent = bounded(error.agent, 100);
+  if (error?.reason != null) detail.reason = bounded(error.reason, 200);
+  if (Number.isFinite(error?.exitCode)) detail.exitCode = error.exitCode;
+  if (error?.stderr != null) detail.stderr = bounded(error.stderr, 500);
+  if (error?.status != null) detail.status = bounded(error.status, 100);
+  if (error?.retryAfterMs != null && Number.isFinite(error.retryAfterMs)) detail.retryAfterMs = Math.min(7 * 86400000, Math.max(0, error.retryAfterMs));
+  if (error?.fallbackSkipped != null) detail.fallbackSkipped = bounded(error.fallbackSkipped, 300);
+  const fallbackAttempts = Array.isArray(error?.fallback) ? error.fallback : error?.fallback?.attempts;
+  if (Array.isArray(fallbackAttempts)) {
+    detail.fallback = {
+      attempts: fallbackAttempts.slice(0, 5).map((attempt: any) => ({
+      ...(attempt?.agent != null ? { agent: bounded(attempt.agent, 100) } : {}),
+      ...(attempt?.code != null ? { code: bounded(attempt.code, 100) } : {}),
+      ...(attempt?.message != null ? { message: bounded(attempt.message, 300) } : {}),
+      ...(attempt?.retryAfterMs != null && Number.isFinite(attempt.retryAfterMs) ? { retryAfterMs: Math.min(7 * 86400000, Math.max(0, attempt.retryAfterMs)) } : {}),
+      })),
+      ...(error.fallback.used != null ? { used: bounded(error.fallback.used, 100) } : {}),
+      ...(error.fallback.contextLost != null ? { contextLost: !!error.fallback.contextLost } : {}),
+    };
+  }
+  return { code, message, ...(Object.keys(detail).length ? { detail } : {}) };
+}
 
 export async function callTool(
   agent: string,
@@ -652,6 +944,7 @@ export async function callTool(
         }
         if (e.type === 'text') progress?.(++n, `${agent}: ${String(e.delta).slice(0, 200)}`);
         else if (e.type === 'tool' && e.output === undefined) progress?.(++n, `${agent} tool: ${e.name}`);
+        else if (e.type === 'quota') progress?.(++n, String(e.message || 'Quota routing update').slice(0, 200));
       },
     });
   } catch (e) {
@@ -660,10 +953,19 @@ export async function callTool(
     } catch {
       /* ignore */
     }
+    if (signal?.aborted) {
+      const err: any = new Error(structuredError(e, signal).message, { cause: e });
+      err.code = 'ABORTED';
+      err.requestReason = signal.reason;
+      throw err;
+    }
+    if ((e as any)?.code === 'AGENT_FAILED' && Number.isFinite((e as any)?.exitCode) && (e as any).exitCode !== 0 && (e as any).cause == null) {
+      (e as any).cause = 'CHILD_DIED';
+    }
     throw e;
   }
   try {
-    tr?.finish({ result: { text: st.text, sessionId: st.sessionId, usage: st.usage, model: st.model } });
+    tr?.finish({ result: { text: st.text, sessionId: st.sessionId, usage: st.usage, model: st.model, agent: st.agent ?? agent, fallback: st.fallback } });
   } catch {
     /* ignore */
   }
@@ -677,6 +979,7 @@ export async function callAny(name: string, args: any, ctx: any = {}): Promise<a
   if ((m = /^dispatch_(\w+)$/.exec(name)) && agentList(env).includes(m[1])) {
     const agent = m[1],
       p = prepare(agent, args, env);
+    fallbackOptions(args, env);
     const { rec, deduped } = dispatch({
       agent,
       model: p.model,
@@ -720,15 +1023,24 @@ export async function callAny(name: string, args: any, ctx: any = {}): Promise<a
     const r0 = loadRun(id as string, env);
     if (typeof id !== 'string' || !r0) return errResult(`Unknown run id: ${id}`);
     let r: any;
+    let waitMeta: any = {};
     if (name === 'cancel_run') {
       const c = cancelRun(id, env);
       if (c.error) return errResult(c.error);
       r = c.rec;
     } else {
-      r = name === 'wait_run' ? await waitRun(id, (Number(args.timeoutSeconds) || 30) * 1000, env) : r0;
+      if (name === 'wait_run') {
+        const requestedTimeoutSeconds = args.timeoutSeconds === undefined ? MAX_WAIT_SECONDS : args.timeoutSeconds;
+        if (typeof requestedTimeoutSeconds !== 'number' || !Number.isFinite(requestedTimeoutSeconds) || requestedTimeoutSeconds <= 0) {
+          throw badOption('timeoutSeconds must be a finite positive number');
+        }
+        const waitTimeoutSeconds = Math.min(requestedTimeoutSeconds, MAX_WAIT_SECONDS);
+        waitMeta = { requestedTimeoutSeconds, waitTimeoutSeconds, waitCapped: requestedTimeoutSeconds > MAX_WAIT_SECONDS };
+        r = await waitRun(id, waitTimeoutSeconds * 1000, env, ctx.signal);
+      } else r = r0;
     }
     const done = r.state === 'done';
-    const out: any = { ...summarize(r), ...(done ? { text: r.result?.text, result: r.result } : {}) };
+    const out: any = { ...summarize(r), ...waitMeta, ...(done ? { text: r.result?.text, result: r.result } : {}) };
     const content = [{ type: 'text', text: done ? r.result?.text || '' : JSON.stringify(summarize(r)) }];
     if (done) {
       const attestation = attest(r.result, env);
@@ -800,10 +1112,17 @@ export async function callAny(name: string, args: any, ctx: any = {}): Promise<a
   if (name === 'check_quota') {
     const { getProactiveQuotaStatus, formatQuotaStatus } = await import('../quota/proactive.js');
     const agent = args?.agent || 'codex';
+    if (args?.model != null && typeof args.model !== 'string') throw badOption('model must be a string');
     const status = await getProactiveQuotaStatus(agent, undefined, {
+      model: args?.model,
       thresholdPercent: args?.thresholdPercent,
+      env,
+      signal: ctx.signal,
     });
-    const remainingPercent = Math.max(0, 100 - status.usedPercent);
+    const measured = status.supported !== false && status.measured === true && status.source !== 'unmetered' &&
+      (status.status === 'ok' || status.status === 'offline') &&
+      typeof status.usedPercent === 'number' && Number.isFinite(status.usedPercent);
+    const remainingPercent = measured && typeof status.usedPercent === 'number' ? Math.max(0, 100 - status.usedPercent) : null;
     const result = {
       ...status,
       remainingPercent,
@@ -817,6 +1136,10 @@ export async function callAny(name: string, args: any, ctx: any = {}): Promise<a
   return undefined;
 }
 
+const isJsonRpcObject = (v: any): v is Record<string, any> => !!v && typeof v === 'object' && !Array.isArray(v);
+const validJsonRpcId = (v: any): boolean => v === null || typeof v === 'string' || (typeof v === 'number' && Number.isFinite(v));
+const invalidJsonRpcRequest = (id: any = null) => ({ jsonrpc: '2.0', id, error: { code: -32600, message: 'Invalid Request' } });
+
 function makeHandler({ env, send }: { env: NodeJS.ProcessEnv; send: (m: any) => void }) {
   const inflight = new Map<any, AbortController>();
   attestKey(env);
@@ -827,12 +1150,23 @@ function makeHandler({ env, send }: { env: NodeJS.ProcessEnv; send: (m: any) => 
       /* ignore */
     }
   }, 1500).unref?.();
-  const handle = async (msg: any): Promise<any> => {
-    const { id, method, params } = msg || {};
-    const isReq = id !== undefined && !!method;
+  const handle = async (msg: any, transportSignal?: AbortSignal): Promise<any> => {
+    if (!isJsonRpcObject(msg)) return invalidJsonRpcRequest();
+    const hasId = Object.prototype.hasOwnProperty.call(msg, 'id');
+    const id = msg.id;
+    const method = msg.method;
+    const params = msg.params;
+    const isReq = hasId;
+    if (
+      msg.jsonrpc !== '2.0' ||
+      typeof method !== 'string' ||
+      (hasId && !validJsonRpcId(id))
+    ) {
+      return invalidJsonRpcRequest(hasId && validJsonRpcId(id) ? id : null);
+    }
     try {
-      if (!method) return undefined;
       if (method === 'initialize') {
+        if (!isReq) return undefined;
         const v = SUPPORTED.includes(params?.protocolVersion) ? params.protocolVersion : SUPPORTED[0];
         return {
           jsonrpc: '2.0',
@@ -845,7 +1179,12 @@ function makeHandler({ env, send }: { env: NodeJS.ProcessEnv; send: (m: any) => 
         };
       }
       if (method === 'notifications/cancelled') {
-        inflight.get(params?.requestId)?.abort();
+        if (isReq) return invalidJsonRpcRequest(id);
+        const controller = inflight.get(params?.requestId);
+        if (controller) {
+          const clientReason = bounded(params?.reason?.message ?? params?.reason, 300);
+          controller.abort({ code: 'REQUEST_CANCELLED', ...(clientReason ? { message: clientReason } : {}) });
+        }
         return undefined;
       }
       if (!isReq) return undefined;
@@ -858,6 +1197,13 @@ function makeHandler({ env, send }: { env: NodeJS.ProcessEnv; send: (m: any) => 
         }
         const ac = new AbortController();
         inflight.set(id, ac);
+        const inheritTransportAbort = () => {
+          if (!ac.signal.aborted) {
+            ac.abort(transportSignal?.reason ?? { code: 'REQUEST_CANCELLED', message: 'CLIENT_DISCONNECTED' });
+          }
+        };
+        if (transportSignal?.aborted) inheritTransportAbort();
+        else transportSignal?.addEventListener('abort', inheritTransportAbort, { once: true });
         const token = params?._meta?.progressToken;
         const progress =
           token === undefined
@@ -871,8 +1217,10 @@ function makeHandler({ env, send }: { env: NodeJS.ProcessEnv; send: (m: any) => 
             result: await callAny(name, params.arguments ?? {}, { env, progress, signal: ac.signal }),
           };
         } catch (e: any) {
-          return { jsonrpc: '2.0', id, result: errResult(`${e.code ? e.code + ': ' : ''}${e.message}`) };
+          const error = structuredError(e, ac.signal);
+          return { jsonrpc: '2.0', id, result: errResult(`${error.code}: ${error.message}`, error) };
         } finally {
+          transportSignal?.removeEventListener('abort', inheritTransportAbort);
           inflight.delete(id);
         }
       }
@@ -902,7 +1250,7 @@ export function serve({
       if (!msg.length) {
         return send({ jsonrpc: '2.0', id: null, error: { code: -32600, message: 'Invalid Request: empty batch' } });
       }
-      const out = (await Promise.all(msg.map(handle))).filter(Boolean);
+      const out = (await Promise.all(msg.map((item) => handle(item)))).filter(Boolean);
       if (out.length) send(out);
     } else {
       const r = await handle(msg);
@@ -958,7 +1306,8 @@ export function serveHttp({
   env?: NodeJS.ProcessEnv;
   path?: string;
 } = {}): Promise<ServeHttpResult> {
-  const { handle } = makeHandler({ env, send: () => {} });
+  const { handle, inflight } = makeHandler({ env, send: () => {} });
+  const postLifecycles = new Set<AbortController>();
   const authorized = (req: http.IncomingMessage) => {
     const h = req.headers.authorization || '';
     const token = h.startsWith('Bearer ') ? h.slice(7) : '';
@@ -967,6 +1316,7 @@ export function serveHttp({
     return a.length === b.length && timingSafeEqual(a, b);
   };
   const respond = (res: http.ServerResponse, status: number, body?: any) => {
+    if (res.destroyed || res.writableEnded) return;
     res.writeHead(status, { 'content-type': 'application/json' });
     res.end(body === undefined ? '' : JSON.stringify(body));
   };
@@ -977,6 +1327,36 @@ export function serveHttp({
     if (!authorized(req)) {
       return respond(res, 401, { jsonrpc: '2.0', id: null, error: { code: -32000, message: 'Unauthorized' } });
     }
+    const postController = new AbortController();
+    postLifecycles.add(postController);
+    const abortDisconnectedPost = () => {
+      if (!postController.signal.aborted) {
+        postController.abort({ code: 'REQUEST_CANCELLED', message: 'CLIENT_DISCONNECTED' });
+      }
+    };
+    const onRequestAborted = () => abortDisconnectedPost();
+    const onResponseClose = () => {
+      if (!res.writableEnded) {
+        abortDisconnectedPost();
+        cleanupPost();
+      }
+    };
+    req.once('aborted', onRequestAborted);
+    res.once('close', onResponseClose);
+    const cleanupPost = () => {
+      req.off('aborted', onRequestAborted);
+      req.off('close', onRequestClose);
+      res.off('close', onResponseClose);
+      res.off('finish', cleanupPost);
+      postLifecycles.delete(postController);
+    };
+    const onRequestClose = () => {
+      if (req.aborted) {
+        abortDisconnectedPost();
+        cleanupPost();
+      }
+    };
+    req.once('close', onRequestClose);
     let body = '';
     req.on('data', (c) => {
       body += c;
@@ -987,18 +1367,25 @@ export function serveHttp({
       try {
         msg = JSON.parse(body);
       } catch {
+        cleanupPost();
         return respond(res, 400, { jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Parse error' } });
       }
-      if (Array.isArray(msg)) {
-        if (!msg.length) {
-          return respond(res, 400, { jsonrpc: '2.0', id: null, error: { code: -32600, message: 'Invalid Request: empty batch' } });
+      try {
+        if (postController.signal.aborted) return;
+        if (Array.isArray(msg)) {
+          if (!msg.length) {
+            return respond(res, 400, { jsonrpc: '2.0', id: null, error: { code: -32600, message: 'Invalid Request: empty batch' } });
+          }
+          const out = (await Promise.all(msg.map((item) => handle(item, postController.signal)))).filter(Boolean);
+          return out.length ? respond(res, 200, out) : respond(res, 202);
         }
-        const out = (await Promise.all(msg.map(handle))).filter(Boolean);
-        return out.length ? respond(res, 200, out) : respond(res, 202);
+        const r = await handle(msg, postController.signal);
+        return r ? respond(res, 200, r) : respond(res, 202);
+      } finally {
+        cleanupPost();
       }
-      const r = await handle(msg);
-      return r ? respond(res, 200, r) : respond(res, 202);
     });
+    res.once('finish', cleanupPost);
   });
   return new Promise((resolve, reject) => {
     server.once('error', reject);
@@ -1008,7 +1395,27 @@ export function serveHttp({
         server,
         port: addr.port,
         url: `http://${host}:${addr.port}${httpPath}`,
-        close: () => new Promise<void>((r) => server.close(() => r())),
+        close: (() => {
+          let closePromise: Promise<void> | undefined;
+          return () => {
+            if (closePromise) return closePromise;
+            for (const controller of postLifecycles) {
+              if (!controller.signal.aborted) {
+                controller.abort({ code: 'REQUEST_CANCELLED', message: 'HTTP_BRIDGE_CLOSED' });
+              }
+            }
+            // Also cover any request controller that has not yet made it into the POST set.
+            for (const controller of inflight.values()) {
+              if (!controller.signal.aborted) {
+                controller.abort({ code: 'REQUEST_CANCELLED', message: 'HTTP_BRIDGE_CLOSED' });
+              }
+            }
+            closePromise = new Promise<void>((r) => server.close(() => r()));
+            server.closeIdleConnections?.();
+            server.closeAllConnections?.();
+            return closePromise;
+          };
+        })(),
       });
     });
   });

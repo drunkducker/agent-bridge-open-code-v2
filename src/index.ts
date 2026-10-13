@@ -6,6 +6,7 @@ import { installIde } from './cli/install-ide.js';
 import { SubagentRoster } from './bridge/subagent-roster.js';
 import { resolvePermissionLevel } from './core/config.js';
 import { formatMemoryForPrompt } from './telemetry/memory.js';
+import { supportsProactiveQuota } from './quota/proactive.js';
 
 export { AgentError, asRateLimited, retryAfterMs, looksRateLimited, rateLimitKind } from './core/errors.js';
 export { ev } from './core/events.js';
@@ -125,6 +126,9 @@ const KNOWN = new Set([
   'isolated',
   'fallback',
   'fallbackOn',
+  'quotaPolicy',
+  'dangerouslySkipPermissions',
+  'yolo',
   'images',
   'harness',
   'offline',
@@ -184,6 +188,28 @@ export function validateOptions(opts: RunOptions): RunOptions {
   }
   if (o.offline != null && typeof o.offline !== 'boolean') {
     throw bad('offline must be a boolean');
+  }
+  if (o.dangerouslySkipPermissions != null && typeof o.dangerouslySkipPermissions !== 'boolean') {
+    throw bad('dangerouslySkipPermissions must be a boolean');
+  }
+  if (o.dangerouslySkipPermissions && o.permissions !== 'full') {
+    throw bad('dangerouslySkipPermissions requires permissions="full"');
+  }
+  if (o.yolo != null && typeof o.yolo !== 'boolean') throw bad('yolo must be a boolean');
+  if (o.yolo && o.permissions !== 'full') throw bad('yolo requires permissions="full"');
+  if (o.quotaPolicy != null) {
+    if (!isObj(o.quotaPolicy) || !Number.isFinite(o.quotaPolicy.minRemainingPercent) || o.quotaPolicy.minRemainingPercent < 0 || o.quotaPolicy.minRemainingPercent > 100) {
+      throw bad('quotaPolicy.minRemainingPercent must be a finite percentage in [0,100]');
+    }
+    for (const key of Object.keys(o.quotaPolicy)) {
+      if (!['minRemainingPercent', 'waitForReset', 'maxWaitMs'].includes(key)) throw bad(`Unknown quotaPolicy option "${key}"`);
+    }
+    if (o.quotaPolicy.waitForReset != null && typeof o.quotaPolicy.waitForReset !== 'boolean') {
+      throw bad('quotaPolicy.waitForReset must be a boolean');
+    }
+    if (o.quotaPolicy.maxWaitMs != null && (!Number.isFinite(o.quotaPolicy.maxWaitMs) || o.quotaPolicy.maxWaitMs <= 0)) {
+      throw bad('quotaPolicy.maxWaitMs must be a positive finite number');
+    }
   }
   if (o.timeoutMs != null && !(Number.isFinite(o.timeoutMs) && o.timeoutMs > 0)) {
     throw bad('timeoutMs must be a positive number');
@@ -249,6 +275,14 @@ export function validateOptions(opts: RunOptions): RunOptions {
     if (!Array.isArray(o.fallback) || o.fallback.length > 5) throw bad('fallback must be an array of at most 5 agents');
     o.fallback = o.fallback.map(parseFallbackTarget as any);
   }
+  if (!o.quotaPolicy && o.fallback?.some((target) => typeof target !== 'string' && target.minRemainingPercent !== undefined)) {
+    throw bad('fallback minRemainingPercent requires quotaPolicy');
+  }
+  for (const target of o.fallback || []) {
+    if (typeof target !== 'string' && target.minRemainingPercent !== undefined && !supportsProactiveQuota(target.agent)) {
+      throw bad(`Quota thresholds are unavailable for fallback agent "${target.agent}"`);
+    }
+  }
   if (o.fallbackOn != null) {
     if (
       !Array.isArray(o.fallbackOn) ||
@@ -261,23 +295,44 @@ export function validateOptions(opts: RunOptions): RunOptions {
   return o;
 }
 
-/** "codex", "ollama:glm-5.3-flash:cloud" or {agent, model?} -> {agent, model?}. */
+/** "codex", "codex@15:model", "ollama:glm-5.3-flash:cloud" or {agent, model?} -> a normalized fallback target. */
 export function parseFallbackTarget(t: any): FallbackTarget {
   if (t && typeof t === 'object' && !Array.isArray(t)) {
     if (typeof t.agent !== 'string' || !t.agent || (t.model != null && typeof t.model !== 'string')) {
       throw bad('fallback entries need a string "agent" (and optional string "model")');
     }
-    return { agent: t.agent, ...(t.model ? { model: t.model } : {}) };
+    if (t.minRemainingPercent !== undefined && (typeof t.minRemainingPercent !== 'number' || !Number.isFinite(t.minRemainingPercent) || t.minRemainingPercent < 0 || t.minRemainingPercent > 100)) {
+      throw bad('fallback minRemainingPercent must be a finite percentage in [0,100]');
+    }
+    return {
+      agent: t.agent,
+      ...(t.model ? { model: t.model } : {}),
+      ...(t.minRemainingPercent === undefined ? {} : { minRemainingPercent: t.minRemainingPercent }),
+    };
   }
-  if (typeof t !== 'string' || !t.trim()) throw bad('fallback entries must be "agent", "agent:model" or {agent, model}');
-  const s = t.trim(),
-    i = s.indexOf(':');
-  return i < 0 ? { agent: s } : { agent: s.slice(0, i), ...(s.slice(i + 1) ? { model: s.slice(i + 1) } : {}) };
+  if (typeof t !== 'string' || !t.trim()) throw bad('fallback entries must be "agent", "agent:model", "agent@percent:model" or {agent, model}');
+  const s = t.trim();
+  const colon = s.indexOf(':');
+  const head = colon < 0 ? s : s.slice(0, colon);
+  const model = colon < 0 ? undefined : s.slice(colon + 1);
+  const at = head.lastIndexOf('@');
+  if (at < 0) return { agent: head, ...(model ? { model } : {}) };
+  const agent = head.slice(0, at);
+  const rawThreshold = head.slice(at + 1);
+  const threshold = rawThreshold.trim() === '' ? NaN : Number(rawThreshold);
+  if (!agent || !Number.isFinite(threshold) || threshold < 0 || threshold > 100) {
+    throw bad('fallback minRemainingPercent must be a finite percentage in [0,100]');
+  }
+  if (colon >= 0 && !model) throw bad('fallback model must be non-empty when a quota threshold is specified');
+  return { agent, minRemainingPercent: threshold, ...(model ? { model } : {}) };
 }
 
 /** Stream normalized events; the generator's return value is the Result. */
 export async function* run(agent: string | AgentAdapter, opts: RunOptions): AsyncGenerator<AgentEvent, RunResult, void> {
   const o = validateOptions(opts);
+  const primaryName = typeof agent === 'string' ? agent.toLowerCase() : agent.name?.toLowerCase();
+  if (o.yolo && primaryName !== 'codex') throw bad('yolo is only supported when the primary agent is Codex');
+  if (o.quotaPolicy) return yield* runQuotaRouted(agent, o);
   const { fallback = [], fallbackOn = ['RATE_LIMITED'], ...base } = o;
   const attempts: any[] = [];
   let cur: { agent: string | AgentAdapter; opts: RunOptions } = { agent, opts: base };
@@ -335,18 +390,162 @@ export async function* run(agent: string | AgentAdapter, opts: RunOptions): Asyn
       });
       yield ev.fallback(curAgentName, next.agent || next, e.code, e.message);
       const { extraArgs, effort, session, model, ...keep } = base;
+      const { dangerouslySkipPermissions, yolo, ...fallbackKeep } = keep;
+      const nextIsClaude = next.agent === 'claude' || next.agent === 'anthropic';
+      const nextIsCodex = next.agent === 'codex';
       void extraArgs;
       void effort;
       void session;
       void model;
+      void dangerouslySkipPermissions;
+      void yolo;
       cur = {
         agent: next.agent,
         opts: {
-          ...keep,
+          ...fallbackKeep,
           ...(next.model ? { model: next.model } : {}),
           ...(session?.mode === 'ephemeral' ? { session } : {}),
+          ...(base.dangerouslySkipPermissions && nextIsClaude ? { dangerouslySkipPermissions: true } : {}),
+          ...(base.yolo && nextIsCodex ? { yolo: true } : {}),
         },
       };
+    }
+  }
+}
+
+async function* runQuotaRouted(agent: string | AgentAdapter, options: RunOptions): AsyncGenerator<AgentEvent, RunResult, void> {
+  const { selectQuotaRoute } = await import('./quota/routing.js');
+  const fallback = options.fallback || [];
+  const routeDefaultModel = (name: string): string | undefined => {
+    const normalized = name.toLowerCase();
+    if (normalized === 'agy' || normalized === 'antigravity') return 'gemini-3.8-flash-low';
+    if (normalized === 'gemini') return options.env?.GEMINI_MODEL || process.env.GEMINI_MODEL || 'gemini-3.5-flash';
+    return undefined;
+  };
+  const candidates = [agent, ...fallback].map((target: any, index) => {
+    const t = typeof target === 'string' ? parseFallbackTarget(target) : typeof target === 'object' && 'agent' in target ? target : { agent: target };
+    const name = typeof t.agent === 'string' ? t.agent : (t.agent.name || 'agent');
+    return {
+      id: `c${index}`,
+      agent: name,
+      model: t.model || (index === 0 ? options.model : undefined) || routeDefaultModel(name),
+      ...(t.minRemainingPercent === undefined ? {} : { minRemainingPercent: t.minRemainingPercent }),
+    };
+  });
+  const primaryName = candidates[0]?.agent?.toLowerCase();
+  if (options.dangerouslySkipPermissions && primaryName !== 'claude' && primaryName !== 'anthropic') {
+    throw bad('dangerouslySkipPermissions is only supported by Claude');
+  }
+  const excluded = new Set<string>();
+  const cooldowns = new Map<string, number>();
+  const waitState = { remainingMs: options.quotaPolicy?.maxWaitMs };
+  const attempts: any[] = [];
+  const accountedRoutes = new Set<string>();
+  let pendingFallback: { from: string; code: string; message: string } | undefined;
+
+  const select = async function* (): AsyncGenerator<AgentEvent, any, void> {
+    const iterator = selectQuotaRoute({
+      candidates,
+      quotaPolicy: options.quotaPolicy!,
+      env: {
+        ...(options.env as NodeJS.ProcessEnv | undefined),
+        ...(options.offline ? { AGENTBRIDGE_OFFLINE: '1' } : {}),
+      },
+      signal: options.signal,
+      exclude: excluded,
+      cooldowns,
+      waitState,
+    });
+    for (;;) {
+      const step = await iterator.next();
+      if (step.done) return step.value;
+      yield step.value;
+    }
+  };
+
+  for (;;) {
+    const routing = select();
+    let selection: any;
+    try {
+      for (;;) {
+        const step = await routing.next();
+        if (step.done) { selection = step.value; break; }
+        yield step.value;
+      }
+    } catch (e: any) {
+      if (attempts.length && e instanceof AgentError) (e as any).fallback = { attempts };
+      throw e;
+    }
+    const selectedIndex: number = selection.index;
+    const selectedName: string = selection.agent;
+    const target: any = selectedIndex === 0 ? agent : (fallback[selectedIndex - 1] as any).agent;
+    const isClaude = selectedName.toLowerCase() === 'claude' || selectedName.toLowerCase() === 'anthropic';
+    for (const skipped of candidates.slice(0, selectedIndex)) {
+      if (accountedRoutes.has(skipped.id)) continue;
+      attempts.push({
+        agent: skipped.agent,
+        ...(skipped.model ? { model: skipped.model } : {}),
+        code: 'QUOTA_ROUTED',
+        message: 'Skipped by quota eligibility policy',
+      });
+      accountedRoutes.add(skipped.id);
+    }
+    if (pendingFallback) {
+      yield ev.fallback(pendingFallback.from, selectedName, pendingFallback.code, pendingFallback.message);
+      pendingFallback = undefined;
+    } else if (selectedIndex > 0 && attempts.length) {
+      const first = candidates[0];
+      yield ev.fallback(first.agent, selectedName, 'QUOTA_ROUTED', 'Skipped by quota eligibility policy');
+    }
+    const { fallback: _fallback, fallbackOn: _fallbackOn, quotaPolicy: _quotaPolicy,
+      extraArgs, effort, session, model, dangerouslySkipPermissions, yolo, ...keep } = options;
+    void _fallback; void _fallbackOn; void _quotaPolicy;
+    const runOpts: RunOptions = {
+      ...keep,
+      env: selection.env,
+      ...(selection.model ? { model: selection.model } : {}),
+      ...(extraArgs && selectedIndex === 0 ? { extraArgs } : {}),
+      ...(effort && selectedIndex === 0 ? { effort } : {}),
+      ...(selectedIndex === 0 ? (session ? { session } : {}) : session?.mode === 'ephemeral' ? { session } : {}),
+      ...(dangerouslySkipPermissions && isClaude ? { dangerouslySkipPermissions: true } : {}),
+      ...(yolo && primaryName === 'codex' && selectedName.toLowerCase() === 'codex' ? { yolo: true } : {}),
+    };
+    let routeTools = false;
+    try {
+      const it = attempt(target, runOpts);
+      try {
+        for (;;) {
+          const x = await it.next();
+          if (x.done) {
+            return attempts.length
+              ? { ...x.value, fallback: { used: selectedName, attempts, contextLost: selectedIndex > 0 && (options.session?.mode === 'continue' || options.session?.mode === 'fork') } }
+              : x.value;
+          }
+          if (x.value.type === 'tool') routeTools = true;
+          yield x.value;
+        }
+      } finally {
+        await (it as any).return?.();
+      }
+    } catch (e: any) {
+      const eligible = e instanceof AgentError && (options.fallbackOn || ['RATE_LIMITED']).includes(e.code as any) && !options.signal?.aborted;
+      const hasOtherCandidate = candidates.some((candidate: any) => candidate.id !== selection.id && !excluded.has(candidate.id));
+      if (!eligible || (e.code !== 'RATE_LIMITED' && !hasOtherCandidate)) {
+        if (attempts.length && e instanceof AgentError) (e as any).fallback = { attempts: [...attempts, { agent: selectedName, code: e.code, message: e.message }] };
+        throw e;
+      }
+      if (routeTools && options.permissions !== 'read-only' && options.permissions !== 'plan') {
+        (e as any).fallbackSkipped = `${selectedName} already ran tools under "${options.permissions}" permissions; repeating the task could duplicate side effects`;
+        throw e;
+      }
+      excluded.add(selection.id);
+      attempts.push({ agent: selectedName, ...(selection.model ? { model: selection.model } : {}), code: e.code, message: e.message,
+        ...(e.retryAfterMs != null ? { retryAfterMs: e.retryAfterMs } : {}) });
+      accountedRoutes.add(selection.id);
+      if (e.code === 'RATE_LIMITED') cooldowns.set(selection.id, Date.now() + Math.max(30_000, e.retryAfterMs || 0));
+      pendingFallback = { from: selectedName, code: e.code, message: e.message };
+      // RATE_LIMITED can retry the same route after its cooldown (single-provider chains included).
+      if (e.code === 'RATE_LIMITED') excluded.delete(selection.id);
     }
   }
 }
@@ -354,6 +553,9 @@ export async function* run(agent: string | AgentAdapter, opts: RunOptions): Asyn
 async function* attempt(agent: string | AgentAdapter, o: RunOptions): AsyncGenerator<AgentEvent, RunResult, void> {
   const adapter = typeof agent === 'string' ? await load(agent) : agent;
   if (!adapter || typeof adapter.run !== 'function') throw bad('agent must be a name or adapter object');
+  if (o.dangerouslySkipPermissions && adapter.name?.toLowerCase() !== 'claude') {
+    throw bad('dangerouslySkipPermissions is only supported by Claude');
+  }
   if (o.signal?.aborted) throw new AgentError('ABORTED', 'Aborted before start');
   try {
     return yield* adapter.run(validateOptions(o));
@@ -476,10 +678,12 @@ export {
   formatQuotaForPrompt,
   setQuotaFixture,
   clearQuotaFixtures,
+  supportsProactiveQuota,
   type ProactiveQuotaHealth,
   type AnthropicUsage,
   type CodexUsage,
 } from './quota/proactive.js';
+export { selectQuotaRoute, type SelectQuotaRouteOptions } from './quota/routing.js';
 
 // Multiple Accounts Management
 export {

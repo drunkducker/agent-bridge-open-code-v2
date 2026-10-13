@@ -31,6 +31,7 @@ import {
   sseStart,
   sseData,
   clientAbort,
+  assertClientActive,
   contentText,
   readParams,
   ignoredHeaders,
@@ -43,6 +44,7 @@ export function openaiError(e: HttpError) {
 }
 
 function finishErr(res: any, e: HttpError, started: boolean) {
+  if (res.destroyed) return;
   if (!started)
     return sendJson(
       res,
@@ -103,6 +105,7 @@ function common(
     incremental: incrementalPrompt(turns),
     systemPrompt: joinSystem(sys, [], target.mode),
     effort: o.effort,
+    quotaPolicy: opts.quotaPolicy,
     jsonSchema,
     maxTokens: params.maxTokens,
     stop: params.stop,
@@ -112,9 +115,11 @@ function common(
 }
 
 async function chat(req: any, res: any, opts: any) {
-  const body = await readJson(req);
-  const p = await attachImages(prepChat(body, opts, req), body);
   const signal = clientAbort(res);
+  const body = await readJson(req);
+  assertClientActive(signal);
+  const p = await attachImages(prepChat(body, opts, req), body, { signal });
+  assertClientActive(signal);
   const ag = withAgentMode(
     {
       ...p,
@@ -279,7 +284,9 @@ function responsesInput(body: any) {
 }
 
 async function responses(req: any, res: any, opts: any) {
+  const signal = clientAbort(res);
   const body = await readJson(req);
+  assertClientActive(signal);
   if (body.previous_response_id) {
     throw new HttpError(
       400,
@@ -303,15 +310,16 @@ async function responses(req: any, res: any, opts: any) {
   const f = body.text?.format;
   if (f?.type === 'json_schema' && f.schema) jsonSchema = f.schema;
   else if (f?.type === 'json_object') sys.push('Reply with a single valid JSON object and nothing else.');
-  const signal = clientAbort(res);
   const p = await attachImages(
     {
       ...common(target, turns, sys, effortFrom(body.reasoning?.effort), jsonSchema, body, opts, req),
       tools,
       choice,
     },
-    body
+    body,
+    { signal }
   );
+  assertClientActive(signal);
   const ag = withAgentMode(
     {
       ...p,

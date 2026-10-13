@@ -309,7 +309,7 @@ export async function handoff(sessionId: string, toAgent: string, opts: any = {}
 
 export async function compact(sessionId: string, opts: any = {}): Promise<any> {
   const env = opts.env || process.env;
-  const before = contextOf(sessionId, { agent: opts.agent, env });
+  const before = contextOf(sessionId, { agent: opts.agent, env, refresh: true });
   const agent = opts.agent || before?.agent;
   if (!agent) throw new AgentError('BAD_OPTION', `Unknown session "${sessionId}": pass opts.agent`);
   const method = opts.method || 'auto';
@@ -329,7 +329,7 @@ export async function compact(sessionId: string, opts: any = {}): Promise<any> {
         },
         { env, hooks: {}, policy: MAINTENANCE_POLICY }
       );
-      const after = contextOf(sessionId, { agent, env });
+      const after = contextOf(sessionId, { agent, env, refresh: true });
       if (after?.source === 'claude-compact-summary-estimate') {
         let measured: any = null;
         if (opts.measure !== false) {
@@ -345,7 +345,7 @@ export async function compact(sessionId: string, opts: any = {}): Promise<any> {
               },
               { env, hooks: {}, policy: MAINTENANCE_POLICY }
             );
-            measured = contextOf(sessionId, { agent, env });
+            measured = contextOf(sessionId, { agent, env, refresh: true });
           } catch {
             /* keep estimate */
           }
@@ -375,6 +375,6 @@ export async function compact(sessionId: string, opts: any = {}): Promise<any> {
     handoffPath: h.path,
     degraded: h.degraded,
     before,
-    after: h.newSessionId ? contextOf(h.newSessionId, { agent, env }) : null,
+    after: h.newSessionId ? contextOf(h.newSessionId, { agent, env, refresh: true }) : null,
   };
 }

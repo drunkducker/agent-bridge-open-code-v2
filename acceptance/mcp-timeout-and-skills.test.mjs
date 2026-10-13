@@ -52,17 +52,80 @@ test('mcpServers timeout validation', () => {
 });
 
 test('codex adapter preserves mcp timeout in args', async () => {
-  // Verify that codex command generator includes -c mcp_servers.<name>.timeout=<seconds>
+  // Verify that Codex receives its native tool_timeout_sec field in seconds.
   const tmp = mkdtempSync(path.join(tmpdir(), 'ab-codex-test-'));
+  const bin = path.join(tmp, 'bin');
+  mkdirSync(bin);
   try {
-    const gen = codexAdapter.run({
+    writeFileSync(path.join(bin, 'codex.cmd'), '@"%~dp0fake-codex.js" %*\n');
+    const capture = path.join(tmp, 'args.json');
+    writeFileSync(path.join(bin, 'fake-codex.js'), `require('node:fs').writeFileSync(process.env.CAPTURE_ARGS, JSON.stringify(process.argv.slice(2))); console.log(JSON.stringify({type:'thread.started',thread_id:'12345678-1234-1234-1234-123456789abc'})); console.log(JSON.stringify({type:'turn.completed',usage:{}}));\n`);
+    const env = { ...process.env, CODEX_HOME: tmp, CAPTURE_ARGS: capture, PATH: `${bin}${path.delimiter}${process.env.PATH || ''}` };
+    env.Path = env.PATH;
+    const events = [];
+    for await (const event of codexAdapter.run({
       prompt: 'test prompt',
       cwd: tmp,
+      env,
       mcpServers: {
         worker: { command: 'node', args: ['worker.js'], timeout: 300 },
       },
-    });
-    // Just testing initiation or arg building if available, or inspecting buildArgs behavior
+    })) events.push(event);
+    const args = JSON.parse(readFileSync(capture, 'utf8'));
+    assert.ok(args.includes('mcp_servers.worker.tool_timeout_sec=300'), args.join(' '));
+    assert.equal(args.some((arg) => /^mcp_servers\.worker\.timeout=/.test(arg)), false);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('Codex read-only, plan, and edit modes reject sandbox bypass flags and config overrides', async () => {
+  const tmp = mkdtempSync(path.join(tmpdir(), 'ab-codex-sandbox-guard-'));
+  const bin = path.join(tmp, 'bin');
+  mkdirSync(bin);
+  try {
+    writeFileSync(path.join(bin, 'codex.cmd'), '@"%~dp0fake-codex.js" %*\n');
+    const capture = path.join(tmp, 'args.json');
+    writeFileSync(path.join(bin, 'fake-codex.js'), `require('node:fs').writeFileSync(process.env.CAPTURE_ARGS, JSON.stringify(process.argv.slice(2))); console.log(JSON.stringify({type:'thread.started',thread_id:'12345678-1234-1234-1234-123456789abc'})); console.log(JSON.stringify({type:'turn.completed',usage:{}}));\n`);
+    const env = { ...process.env, CODEX_HOME: tmp, CAPTURE_ARGS: capture, PATH: `${bin}${path.delimiter}${process.env.PATH || ''}` };
+    env.Path = env.PATH;
+    const blocked = [
+      ['--dangerously-bypass-approvals-and-sandbox'],
+      ['--yolo'],
+      ['--full-auto'],
+      ['--add-dir', 'C:/additional-root'],
+      ['--add-dir=C:/additional-root'],
+      ['--sandbox', 'danger-full-access'],
+      ['--sandbox=danger-full-access'],
+      ['-s', 'danger-full-access'],
+      ['-sdanger-full-access'],
+      ['-c', 'sandbox_mode="danger-full-access"'],
+      ['--config', 'sandbox_mode="danger-full-access"'],
+      ['-c=sandbox_mode="danger-full-access"'],
+      ['--config=sandbox_mode="danger-full-access"'],
+      ['-csandbox_mode="danger-full-access"'],
+      ['-c', 'windows.sandbox="elevated"'],
+      ['--config', 'sandbox_workspace_write.writable_roots=["C:/"]'],
+      ['-c', 'windows={sandbox="elevated"}'],
+      ['--config=windows = { sandbox = "elevated" }'],
+    ];
+    for (const permissions of ['read-only', 'plan', 'edit']) {
+      for (const extraArgs of blocked) {
+        await assert.rejects(
+          async () => {
+            for await (const _event of codexAdapter.run({ prompt: 'test', cwd: tmp, env, permissions, extraArgs })) {}
+          },
+          { code: 'BAD_OPTION' },
+          `${permissions}: ${extraArgs.join(' ')}`
+        );
+      }
+    }
+    assert.equal(existsSync(capture), false, 'blocked runs must be rejected before Codex starts');
+
+    for await (const _event of codexAdapter.run({
+      prompt: 'test', cwd: tmp, env, permissions: 'full', extraArgs: ['--dangerously-bypass-approvals-and-sandbox'],
+    })) {}
+    assert.ok(JSON.parse(readFileSync(capture, 'utf8')).includes('--dangerously-bypass-approvals-and-sandbox'));
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }

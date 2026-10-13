@@ -20,6 +20,49 @@ const PLAN_NOTE = 'PLAN MODE: do not modify any files or run state-changing comm
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const bad = (m: string) => new AgentError('BAD_OPTION', m);
 
+function widensSandbox(extraArgs: string[]): boolean {
+  const protectedConfig = (value: string | undefined) =>
+    !!value && /^(?:\s*(?:sandbox_mode|windows\.sandbox|sandbox_workspace_write(?:\.[A-Za-z0-9_-]+)*|sandbox_permissions(?:\.[A-Za-z0-9_-]+)*)\s*=|\s*windows\s*=\s*\{[^}]*\bsandbox\s*=)/i.test(value);
+  for (let i = 0; i < extraArgs.length; i++) {
+    const arg = extraArgs[i].trim();
+    if (/^(?:--dangerously-bypass-approvals-and-sandbox|--yolo)(?:=|$)/i.test(arg)) return true;
+    if (/^(?:--full-auto|--add-dir)(?:=|$)/i.test(arg)) return true;
+    if (/^(?:--sandbox|-s)(?:=|$)/i.test(arg) || /^-s(?:read-only|workspace-write|danger-full-access)$/i.test(arg)) return true;
+    if (arg === '-c' || arg === '--config') {
+      if (protectedConfig(extraArgs[i + 1]?.trim())) return true;
+      continue;
+    }
+    if (arg.startsWith('--config=')) {
+      if (protectedConfig(arg.slice('--config='.length))) return true;
+      continue;
+    }
+    if (arg.startsWith('-c=')) {
+      if (protectedConfig(arg.slice(3))) return true;
+      continue;
+    }
+    // Codex accepts both `-c key=value` and attached short-option values such as `-ckey=value`.
+    if (/^-c.+/s.test(arg) && protectedConfig(arg.slice(2))) return true;
+    if (arg.startsWith('--sandbox=')) return true;
+  }
+  return false;
+}
+
+function conflictsWithYolo(extraArgs: string[]): boolean {
+  const option = /^(?:--sandbox(?:=|$)|-s\S*|--ask-for-approval(?:=|$)|-a\S*|--full-auto(?:=|$))/i;
+  const config = /(?:^|\s)(?:sandbox_mode|windows\.sandbox|sandbox_workspace_write(?:\.[A-Za-z0-9_-]+)*|sandbox_permissions(?:\.[A-Za-z0-9_-]+)*|approval_policy)\s*=/i;
+  for (let i = 0; i < extraArgs.length; i++) {
+    const arg = extraArgs[i].trim();
+    if (option.test(arg)) return true;
+    const configValues = [arg];
+    if (arg === '-c' || arg === '--config') configValues.push(extraArgs[i + 1]?.trim() || '');
+    else if (arg.startsWith('--config=')) configValues.push(arg.slice('--config='.length));
+    else if (arg.startsWith('-c=')) configValues.push(arg.slice(3));
+    else if (/^-c.+/s.test(arg)) configValues.push(arg.slice(2));
+    if (configValues.some((value) => config.test(value))) return true;
+  }
+  return false;
+}
+
 function rolloutExists(id: string, env?: NodeJS.ProcessEnv): boolean {
   const root = path.join(codexHome(env), 'sessions');
   let found = false;
@@ -94,15 +137,18 @@ function buildArgs(o: any, schemaFile?: string, claim: { id?: string } = {}, ima
   const fresh = mode === 'new' || mode === 'ephemeral';
   const sub = mode === 'continue' ? ['resume'] : mode === 'fork' ? ['fork'] : [];
   const a = ['exec', ...sub, ...imageFiles.flatMap((f) => ['-i', f]), '--json', '--skip-git-repo-check'];
-  if (process.platform === 'win32' && !(o.extraArgs || []).some((x: string) => /windows.sandbox/.test(x)))
+  if (o.yolo) a.push('--yolo');
+  if (!o.yolo && process.platform === 'win32' && !(o.extraArgs || []).some((x: string) => /windows.sandbox/.test(x)))
     a.push('-c', 'windows.sandbox="unelevated"');
   if (mode === 'ephemeral') a.push('--ephemeral');
   if (o.model) a.push('-m', o.model);
   if (o.effort) a.push('-c', `model_reasoning_effort=${toml(EFFORT[o.effort])}`);
   const sb = SANDBOX[o.permissions];
-  if (fresh) a.push('--sandbox', sb, '-C', path.resolve(o.cwd || process.cwd()));
+  if (o.yolo) {
+    if (fresh) a.push('-C', path.resolve(o.cwd || process.cwd()));
+  } else if (fresh) a.push('--sandbox', sb, '-C', path.resolve(o.cwd || process.cwd()));
   else a.push('-c', `sandbox_mode=${toml(sb)}`);
-  if (sb === 'workspace-write') {
+  if (!o.yolo && sb === 'workspace-write') {
     const roots = (o.writableRoots || []).map((r: string) => path.resolve(r));
     if (roots.length) a.push('-c', `sandbox_workspace_write.writable_roots=[${roots.map(toml).join(',')}]`);
     a.push('-c', 'sandbox_workspace_write.exclude_tmpdir_env_var=true', '-c', 'sandbox_workspace_write.exclude_slash_tmp=true');
@@ -118,7 +164,7 @@ function buildArgs(o: any, schemaFile?: string, claim: { id?: string } = {}, ima
       a.push('-c', `${k}.env={${Object.entries(srv.env).map(([x, y]) => `${toml(x)}=${toml(String(y))}`).join(',')}}`);
     if (srv.timeout != null) {
       const toSec = srv.timeout >= 1000 ? Math.round(srv.timeout / 1000) : Math.round(srv.timeout);
-      a.push('-c', `${k}.timeout=${toSec}`);
+      a.push('-c', `${k}.tool_timeout_sec=${toSec}`);
     }
   }
   if (schemaFile) a.push('--output-schema', schemaFile);
@@ -127,12 +173,9 @@ function buildArgs(o: any, schemaFile?: string, claim: { id?: string } = {}, ima
       throw bad('extraArgs must be string[]');
     }
     if (o.permissions !== 'full') {
-      for (const arg of o.extraArgs) {
-        if (/^(--sandbox|-c\s*sandbox_mode=|-c\s*windows\.sandbox=|-c\s*sandbox_workspace_write\.)/i.test(arg.trim())) {
-          throw bad(`extraArgs cannot override sandbox configuration under "${o.permissions}" permissions`);
-        }
-      }
+      if (widensSandbox(o.extraArgs)) throw bad(`extraArgs cannot override sandbox configuration under "${o.permissions}" permissions`);
     }
+    if (o.yolo && conflictsWithYolo(o.extraArgs)) throw bad('extraArgs cannot set sandbox or approval policy when Codex yolo is enabled');
     if (o.extraArgs.length) a.push(...o.extraArgs.map(String));
   }
   if (sub.length) {
@@ -241,7 +284,7 @@ const adapter: AgentAdapter = {
             reasoning: usage.reasoning + (u.reasoning_output_tokens || 0),
           };
           yield {
-            ...ev.usage(u.input_tokens || 0, u.output_tokens || 0),
+            ...ev.usage(u.input_tokens || 0, u.output_tokens || 0, undefined, true),
             cost: null,
             cachedInput: u.cached_input_tokens || 0,
             reasoning: u.reasoning_output_tokens || 0,

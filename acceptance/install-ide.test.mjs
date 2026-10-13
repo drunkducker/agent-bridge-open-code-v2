@@ -139,3 +139,40 @@ test('installIde throws on unknown target', () => {
     /Unknown IDE target/
   );
 });
+
+test('installIde rejects unsupported scopes and non-positive or non-finite timeouts before writing', () => {
+  const tmp = mkdtempSync(path.join(tmpdir(), 'ab-ide-invalid-options-'));
+  try {
+    const configPath = path.join(tmp, 'mcp.json');
+    for (const scope of ['porject', 'local', '']) {
+      assert.throws(() => installIde('cursor', { scope, configPath }), /scope/i);
+      assert.equal(existsSync(configPath), false);
+    }
+    for (const timeout of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      assert.throws(() => installIde('cursor', { scope: 'project', configPath, timeout }), /timeout/i);
+      assert.equal(existsSync(configPath), false);
+    }
+
+    const valid = installIde('cursor', { scope: 'project', configPath, timeout: 42 });
+    assert.equal(valid.modified, true);
+    assert.equal(JSON.parse(readFileSync(configPath, 'utf8')).mcpServers.agentbridge.timeout, 42);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('IDE path and install APIs reject invalid scopes and non-number timeout values even with configPath', () => {
+  const tmp = mkdtempSync(path.join(tmpdir(), 'ab-ide-api-validation-'));
+  try {
+    const configPath = path.join(tmp, 'mcp.json');
+    assert.throws(() => getIdeConfigPath('cursor', { scope: 'project-ish', configPath }), /scope/i);
+    assert.throws(() => getIdeConfigPath('cursor', { scope: null, configPath }), /scope/i);
+    assert.throws(() => installIde('cursor', { scope: null, configPath }), /scope/i);
+    for (const timeout of [null, true, '42']) {
+      assert.throws(() => installIde('cursor', { scope: 'project', configPath, timeout }), /timeout/i);
+      assert.equal(existsSync(configPath), false);
+    }
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});

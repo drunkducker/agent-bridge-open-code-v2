@@ -5,7 +5,7 @@
 
 import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { rmSync, existsSync } from 'node:fs';
+import { rmSync, existsSync, lstatSync, realpathSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { AgentError } from '../core/errors.js';
@@ -18,16 +18,17 @@ const G = [
   '-c', 'commit.gpgsign=false',
 ];
 
-function git(cwd: string, args: string[], options: { env?: NodeJS.ProcessEnv; input?: string } = {}): string {
+function git(cwd: string, args: string[], options: { env?: NodeJS.ProcessEnv; input?: string; raw?: boolean } = {}): string {
   try {
-    return execFileSync('git', [...G, ...args], {
+    const output = execFileSync('git', [...G, ...args], {
       cwd,
       encoding: 'utf8',
       stdio: ['pipe', 'pipe', 'pipe'],
       maxBuffer: 64 * 1024 * 1024,
       env: { ...process.env, ...(options.env || {}) },
       input: options.input,
-    }).trim();
+    });
+    return options.raw ? output : output.trim();
   } catch (e: any) {
     const err = e.stderr ? String(e.stderr).trim() : e.message;
     throw new AgentError('AGENT_FAILED', `git ${args.join(' ')} failed: ${err}`);
@@ -39,6 +40,39 @@ function findRepoRoot(cwd: string): string {
     return git(cwd, ['rev-parse', '--show-toplevel']);
   } catch {
     throw new AgentError('BAD_OPTION', `Directory is not a git repository: ${cwd}`);
+  }
+}
+
+function removeTrackedPathSafely(root: string, file: string): void {
+  const realRoot = realpathSync(root);
+  const fullPath = path.resolve(realRoot, file);
+  const relPath = path.relative(realRoot, fullPath);
+  if (relPath === '..' || relPath.startsWith(`..${path.sep}`) || path.isAbsolute(relPath)) {
+    throw new AgentError('AGENT_FAILED', `Refusing to remove checkpoint path outside repository: ${file}`);
+  }
+
+  // Check the resolved parent so a symlink/junction inside the repo cannot redirect unlinking
+  // outside it. The final component is removed with unlink semantics, which never follows links.
+  try {
+    const parent = realpathSync(path.dirname(fullPath));
+    const parentRel = path.relative(realRoot, parent);
+    if (parentRel === '..' || parentRel.startsWith(`..${path.sep}`) || path.isAbsolute(parentRel)) {
+      throw new AgentError('AGENT_FAILED', `Refusing to remove checkpoint path through an external link: ${file}`);
+    }
+  } catch (err: any) {
+    if (err instanceof AgentError) throw err;
+    if (err.code !== 'ENOENT') throw err;
+  }
+
+  try {
+    const stat = lstatSync(fullPath);
+    if (stat.isDirectory() && !stat.isSymbolicLink()) {
+      throw new AgentError('AGENT_FAILED', `Refusing to recursively remove unexpected directory: ${file}`);
+    }
+    unlinkSync(fullPath);
+  } catch (err: any) {
+    if (err instanceof AgentError) throw err;
+    if (err.code !== 'ENOENT') throw err;
   }
 }
 
@@ -126,7 +160,7 @@ export function listCheckpoints(cwd: string = process.cwd(), sessionId?: string)
 
   let raw = '';
   try {
-    raw = git(root, ['for-each-ref', '--format=%(refname)|%(objectname)|%(subject)', pattern]);
+    raw = git(root, ['for-each-ref', '--format=%(refname)%00%(objectname)%00%(subject)', pattern], { raw: true });
   } catch {
     return [];
   }
@@ -134,12 +168,17 @@ export function listCheckpoints(cwd: string = process.cwd(), sessionId?: string)
   if (!raw) return [];
 
   const list: CheckpointInfo[] = [];
+  const prefix = 'refs/agentbridge/checkpoints/';
   for (const line of raw.split('\n')) {
-    if (!line.trim()) continue;
-    const [ref, commitOid, subject] = line.split('|');
-    const parts = ref.split('/');
-    const id = parts[parts.length - 1];
-    const sess = parts.length > 4 ? parts[3] : 'default';
+    if (!line) continue;
+    const [ref, commitOid, subject] = line.split('\0');
+    if (!ref?.startsWith(prefix) || !commitOid || subject == null) continue;
+    const relative = ref.slice(prefix.length);
+    const lastSlash = relative.lastIndexOf('/');
+    if (lastSlash < 0) continue;
+    const id = relative.slice(lastSlash + 1);
+    const sess = relative.slice(0, lastSlash);
+    if (sessionId && sess !== sessionId) continue;
     list.push({
       id,
       ref,
@@ -164,16 +203,10 @@ export function rollbackCheckpoint(cwd: string = process.cwd(), checkpointId: st
 
   // 1. Identify files currently in the index that did not exist in the checkpoint
   const targetFiles = new Set(
-    git(root, ['ls-tree', '-r', '--name-only', target.commitOid])
-      .split(/\r?\n/)
-      .map((s) => s.trim())
-      .filter(Boolean)
+    git(root, ['ls-tree', '-r', '--name-only', '-z', target.commitOid], { raw: true }).split('\0').filter(Boolean)
   );
 
-  const currentTracked = git(root, ['ls-files'])
-    .split(/\r?\n/)
-    .map((s) => s.trim())
-    .filter(Boolean);
+  const currentTracked = git(root, ['ls-files', '-z'], { raw: true }).split('\0').filter(Boolean);
 
   const removedFiles: string[] = [];
   for (const file of currentTracked) {
@@ -182,10 +215,12 @@ export function rollbackCheckpoint(cwd: string = process.cwd(), checkpointId: st
         git(root, ['rm', '-f', '--', file]);
         removedFiles.push(file);
       } catch {
-        const fullPath = path.join(root, file);
-        if (existsSync(fullPath)) {
-          rmSync(fullPath, { recursive: true, force: true });
+        try {
+          removeTrackedPathSafely(root, file);
+          git(root, ['update-index', '--force-remove', '--', file]);
           removedFiles.push(file);
+        } catch (err: any) {
+          throw new AgentError('AGENT_FAILED', `Failed to remove checkpoint path "${file}": ${err.message}`);
         }
       }
     }
@@ -195,11 +230,7 @@ export function rollbackCheckpoint(cwd: string = process.cwd(), checkpointId: st
   git(root, ['checkout', target.commitOid, '--', '.']);
 
   // 3. Clean untracked files that didn't exist in the checkpoint
-  try {
-    git(root, ['clean', '-fd']);
-  } catch {
-    /* ignore clean errors */
-  }
+  git(root, ['clean', '-fd']);
 
   return { restoredOid: target.commitOid, removedFiles };
 }
@@ -223,7 +254,7 @@ export function diffCheckpoint(cwd: string = process.cwd(), checkpointId: string
     }
     git(root, ['add', '-A'], { env });
     const currentTree = git(root, ['write-tree'], { env });
-    return git(root, ['diff', target.commitOid, currentTree]);
+    return git(root, ['diff', '--no-ext-diff', '--no-textconv', target.commitOid, currentTree]);
   } finally {
     try {
       if (existsSync(tempIndexFile)) rmSync(tempIndexFile, { force: true });

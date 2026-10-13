@@ -216,7 +216,7 @@ export async function doctor({
   const info: Record<string, any> = {};
   await Promise.all(
     agents.map(async (name) => {
-      const bin = name === 'agy' ? findAgy() : name === 'pi' ? findPi() : resolveBinary(name);
+      const bin = name === 'agy' ? findAgy() : name === 'pi' ? findPi() : resolveBinary(name === 'cursor' ? 'cursor-agent' : name);
       const a: any = (info[name] = {
         installed: !!bin,
         path: bin,

@@ -7,7 +7,7 @@ import { findBinary as findPi } from '../adapters/pi.js';
 export const CLI_AGENTS = ['claude', 'codex', 'opencode', 'agy', 'pi'] as const;
 
 export function binaryOf(name: string): string | null {
-  return name === 'agy' ? findAgy() : name === 'pi' ? findPi() : resolveBinary(name);
+  return name === 'agy' ? findAgy() : name === 'pi' ? findPi() : resolveBinary(name === 'cursor' ? 'cursor-agent' : name);
 }
 
 export function isInstalled(name: string): boolean {

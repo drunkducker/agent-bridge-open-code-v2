@@ -161,6 +161,19 @@ interface FetchedImage {
   done: () => void;
 }
 
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : new DOMException('The operation was aborted', 'AbortError');
+}
+
+function cancelBody(body: any): void {
+  try {
+    if (typeof body?.destroy === 'function') body.destroy();
+    else if (typeof body?.cancel === 'function') void Promise.resolve(body.cancel()).catch(() => {});
+  } catch {
+    // Cancellation is best effort; preserve the original fetch/validation result.
+  }
+}
+
 /**
  * Single-shot http/https GET that connects to the address `assertPublic` validated, while SNI
  * (`servername`) and the Host header still carry the original hostname. This pins the socket to
@@ -168,7 +181,7 @@ interface FetchedImage {
  * private infrastructure (TOCTOU / DNS-rebinding fix). The whole request is bounded by a
  * wall-clock timer that destroys the socket on expiry.
  */
-function pinnedRequest(url: URL, ip: string): Promise<FetchedImage> {
+function pinnedRequest(url: URL, ip: string, signal?: AbortSignal): Promise<FetchedImage> {
   const isHttps = url.protocol === 'https:';
   const mod = isHttps ? https : http;
   const host = url.hostname.replace(/^\[|\]$/g, '');
@@ -181,7 +194,22 @@ function pinnedRequest(url: URL, ip: string): Promise<FetchedImage> {
   };
   return new Promise((resolve, reject) => {
     const req = mod.request(options, (res) => {
+      if (signal?.aborted) {
+        req.destroy(new Error('image download aborted'));
+        res.destroy();
+        clearTimeout(timer);
+        signal?.removeEventListener('abort', abortRequest);
+        reject(signal.reason instanceof Error ? signal.reason : new DOMException('The operation was aborted', 'AbortError'));
+        return;
+      }
       const status = res.statusCode || 0;
+      const abortResponse = () => {
+        const error = new Error('image download aborted');
+        req.destroy(error);
+        res.destroy(error);
+      };
+      signal?.removeEventListener('abort', abortRequest);
+      signal?.addEventListener('abort', abortResponse, { once: true });
       resolve({
         status,
         ok: status >= 200 && status <= 299,
@@ -192,12 +220,25 @@ function pinnedRequest(url: URL, ip: string): Promise<FetchedImage> {
           },
         },
         body: res,
-        done: () => clearTimeout(timer),
+        done: () => {
+          clearTimeout(timer);
+          signal?.removeEventListener('abort', abortResponse);
+        },
       });
     });
     const timer = setTimeout(() => req.destroy(new Error('image download timed out')), DOWNLOAD_BUDGET_MS);
     timer.unref();
-    req.on('error', () => reject(bad('image URL could not be fetched', 'image_fetch_failed')));
+    const cleanup = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', abortRequest);
+    };
+    const abortRequest = () => req.destroy(new Error('image download aborted'));
+    signal?.addEventListener('abort', abortRequest, { once: true });
+    req.on('error', () => {
+      cleanup();
+      reject(bad('image URL could not be fetched', signal?.aborted ? 'aborted' : 'image_fetch_failed'));
+    });
+    if (signal?.aborted) abortRequest();
     req.end();
   });
 }
@@ -210,9 +251,10 @@ function pinnedRequest(url: URL, ip: string): Promise<FetchedImage> {
  * through `pinnedRequest`, whose socket connects to the very IP `assertPublic` validated, so
  * a DNS server flipping answers between validation and connection cannot bypass the filter.
  */
-async function fetchImage(raw: string, fetchImpl?: typeof fetch): Promise<ImageInput> {
+async function fetchImage(raw: string, fetchImpl?: typeof fetch, signal?: AbortSignal): Promise<ImageInput> {
   let url!: URL;
   for (let hop = 0; hop < 4; hop++) {
+    throwIfAborted(signal);
     try {
       url = new URL(hop ? url.href : raw);
     } catch {
@@ -220,8 +262,9 @@ async function fetchImage(raw: string, fetchImpl?: typeof fetch): Promise<ImageI
     }
     if (url.protocol !== 'http:' && url.protocol !== 'https:') throw bad('image URLs must be http(s) or data:');
     const ip = await assertPublic(url);
+    throwIfAborted(signal);
     const r: FetchedImage = fetchImpl
-      ? await fetchImpl(url, { redirect: 'manual', signal: AbortSignal.timeout(10000) })
+      ? await fetchImpl(url, { redirect: 'manual', signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(10000)]) : AbortSignal.timeout(10000) })
           .then(
             (res): FetchedImage => ({
               status: res.status,
@@ -234,10 +277,10 @@ async function fetchImage(raw: string, fetchImpl?: typeof fetch): Promise<ImageI
           .catch(() => {
             throw bad('image URL could not be fetched', 'image_fetch_failed');
           })
-      : await pinnedRequest(url, ip);
+      : await pinnedRequest(url, ip, signal);
     const dispose = () => {
       r.done();
-      (r.body as unknown as { destroy?: () => void } | null | undefined)?.destroy?.(); // 204/304 responses carry a null body
+      cancelBody(r.body); // 204/304 responses carry a null body
     };
     if (r.status >= 300 && r.status < 400 && r.headers.get('location')) {
       dispose();
@@ -311,17 +354,18 @@ export function findImages(body: any): ImageRef[] {
   return out;
 }
 
-export async function resolveImages(body: any, { fetchImpl }: { fetchImpl?: typeof fetch } = {}): Promise<ImageInput[]> {
+export async function resolveImages(body: any, { fetchImpl, signal }: { fetchImpl?: typeof fetch; signal?: AbortSignal } = {}): Promise<ImageInput[]> {
   const found = findImages(body);
   if (found.length > MAX_IMAGES) throw bad(`at most ${MAX_IMAGES} images per request`, 'too_many_images');
   const out: ImageInput[] = [];
   for (const f of found) {
+    throwIfAborted(signal);
     if (f.data) {
       if (!TYPES.test(f.mediaType || '')) throw bad(`unsupported image type "${f.mediaType}"`);
       if (Buffer.byteLength(f.data, 'base64') > MAX_BYTES) throw bad('image is larger than 10 MB', 'image_too_large');
       out.push({ mediaType: f.mediaType!.toLowerCase(), data: f.data });
     } else if (typeof f.url === 'string') {
-      out.push(f.url.startsWith('data:') ? parseDataUrl(f.url) : await fetchImage(f.url, fetchImpl));
+      out.push(f.url.startsWith('data:') ? parseDataUrl(f.url) : await fetchImage(f.url, fetchImpl, signal));
     } else {
       throw bad('image part has no url or data');
     }
@@ -332,7 +376,7 @@ export async function resolveImages(body: any, { fetchImpl }: { fetchImpl?: type
 /**
  * Attach request images to a prepared run `p`.
  */
-export async function attachImages(p: any, body: any, opts: { fetchImpl?: typeof fetch } = {}): Promise<any> {
+export async function attachImages(p: any, body: any, opts: { fetchImpl?: typeof fetch; signal?: AbortSignal } = {}): Promise<any> {
   const found = findImages(body);
   if (!found.length) return p;
   const agent = typeof p.target.agent === 'string' ? p.target.agent : p.target.agent?.name;
