@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.5.1] - 2026-10-13
+
+### Safety & MCP Run Controls
+- **Claude root bypass guard:** Reject `--dangerously-skip-permissions` up front when AgentBridge runs as root, with guidance for non-root execution and genuine sandbox use.
+- **Unambiguous MCP timeout units:** `timeoutSeconds` is always seconds; the legacy `timeout` alias retains its millisecond heuristic for values of 1000 or more. Schemas and documentation now explain the difference.
+
+### Updates & Documentation
+- **Stale skill notices:** npm installs print a reminder when lifecycle output is visible, and interactive CLI use warns when installed `agentbridge-delegate` copies differ from the bundled skill. No agent files or configuration are changed automatically.
+- Clarified quota fallback, MCP diagnostics, harness permissions, and skill refresh instructions.
+
 ## [0.5.0] - 2026-10-13
 
 ### Quota-Aware Routing
