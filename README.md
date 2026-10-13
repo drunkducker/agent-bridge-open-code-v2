@@ -81,6 +81,18 @@ Install globally via npm:
 npm install -g @rodolfonobrega/agentbridge
 ```
 
+### Updating AgentBridge and its skill
+
+Updating the npm package updates AgentBridge itself, but it does **not** refresh copies of the `agentbridge-delegate` skill that were installed into an agent's skills directory. After updating, run `ab setup` and choose the skill install option to sync it. Setup may also update the integrations you select; review its prompts before continuing.
+
+The package prints a reminder after install/update when npm shows lifecycle output. On interactive CLI use, AgentBridge also compares installed `agentbridge-delegate` skill copies with its bundled skill and warns on stderr when a copy is stale. These notices never update skill files or agent configuration automatically. npm 7 and newer hide successful lifecycle output by default, so to see the install/update reminder, use:
+
+```bash
+npm update -g @rodolfonobrega/agentbridge --foreground-scripts
+```
+
+You can also run `ab setup` at any time without updating the npm package.
+
 Or run directly without installing:
 ```bash
 npx @rodolfonobrega/agentbridge setup

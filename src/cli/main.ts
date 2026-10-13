@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 // agentbridge CLI (`ab` / `agentbridge`). Plain Node ESM, zero deps.
 import { fileURLToPath } from 'node:url';
-import { realpathSync } from 'node:fs';
+import { realpathSync, readFileSync } from 'node:fs';
+import path from 'node:path';
+import { homedir } from 'node:os';
 import { parseArgs, UsageError, num, readStdin } from './args.js';
 import {
   runTracked,
@@ -23,11 +25,37 @@ import { runInWorktree, withWorktree } from '../extras/worktree.js';
 import { listRuns, summarize, cancelRun, sweep } from '../bridge/runs.js';
 import { listSessions } from '../telemetry/stats.js';
 import { AgentEvent, RunOptions, FallbackErrorCode } from '../types/index.js';
+import { projectSkillDirs } from '../core/shared-resources.js';
 
 const out = (o: any) =>
   process.stdout.write(typeof o === 'string' ? o + (o.endsWith('\n') ? '' : '\n') : JSON.stringify(o, null, 2) + '\n');
 const err = (s: any) => process.stderr.write(String(s).endsWith('\n') ? s : s + '\n');
 const AGENT_NAMES = new Set(agents.names);
+
+function warnAboutStaleSkillCopies(cmd: string, json: boolean | undefined) {
+  if (!process.stdin.isTTY || !process.stderr.isTTY || json || cmd === 'bridge' || cmd === 'setup' || cmd === 'wizard') return;
+  try {
+    const bundled = readFileSync(fileURLToPath(new URL('../../skills/agentbridge-delegate/SKILL.md', import.meta.url)));
+    const roots = [
+      path.join(homedir(), '.agents', 'skills'),
+      path.join(homedir(), '.claude', 'skills'),
+      path.join(homedir(), '.codex', 'skills'),
+      path.join(homedir(), '.pi', 'agent', 'skills'),
+      path.join(homedir(), '.gemini', 'config', 'skills'),
+      ...projectSkillDirs(process.cwd()),
+    ];
+    const stale = roots.some((root) => {
+      try {
+        return !readFileSync(path.join(root, 'agentbridge-delegate', 'SKILL.md')).equals(bundled);
+      } catch {
+        return false;
+      }
+    });
+    if (stale) err('An installed agentbridge-delegate skill differs from AgentBridge’s bundled version. Run `ab setup` and choose the skill install option to refresh it.');
+  } catch {
+    // The bundled skill may not be present in development or a partial install; keep CLI startup quiet.
+  }
+}
 
 function checkAgent(a: string) {
   if (!AGENT_NAMES.has(a)) throw new UsageError(`Unknown agent "${a}". Expected one of: ${agents.names.join(', ')}`);
@@ -611,6 +639,7 @@ export async function main(): Promise<void> {
     fail(e, false);
     return;
   }
+  if (cmd) warnAboutStaleSkillCopies(cmd, flags?.json);
   if (!cmd || cmd === '-h' || cmd === '--help' || cmd === 'help' || flags?.help) {
     out(HELP);
     return;
