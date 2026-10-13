@@ -226,6 +226,10 @@ test('runTurn timeout aborts a hanging setup RPC promptly with TIMEOUT', async (
 test('runTurn caller abort remains ABORTED, including while queued behind another turn', async () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'cx-p2-queued-abort-'));
   const daemon = new CodexAppServerDaemon(dir);
+  // The mocked daemon has no referenced child pipes; model the live process handles
+  // so unref'd turn deadlines still fire on Node 22.
+  const childHandle = setInterval(() => {}, 1000);
+  try {
   daemon.ensureStarted = async () => {};
   const calls = [];
   let markFirstStarted;
@@ -255,5 +259,8 @@ test('runTurn caller abort remains ABORTED, including while queued behind anothe
   assert.ok(!calls.some((call) => call.prompt === 'timed'), 'a timed out queued turn must never start an RPC');
   daemon['handleServerNotification']('turn/completed', { turn: { status: 'completed' } }, {});
   await firstTask;
+  } finally {
+    clearInterval(childHandle);
+  }
 });
 
