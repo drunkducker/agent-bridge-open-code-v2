@@ -216,7 +216,7 @@ res = client.chat.completions.create(
 ```json
 { "aliases": { "fast": "claude/haiku" },
   "payload": [{ "match": "codex/*", "defaults": { "effort": "medium" }, "override": { "temperature": 0.2 } }],
-  "agentRoot": "C:/work", "maxPermission": "edit", "historyBudgetTokens": 0 }
+  "agentRoot": "C:/work", "agentMaxRuns": 8, "agentRunTtlMinutes": 30, "maxPermission": "edit", "historyBudgetTokens": 0 }
 ```
 Payload-rule keys: `defaults` fills a key only when the request leaves it unset; `override` forces it. The config file can also carry a top-level `accounts` object (same shape as the `--accounts` file) to set up the pool inline; like the pool file, it is read at startup and never hot-reloaded (and still needs `--accept-tos-risk`). A bad reload keeps the previous config. Requests in flight keep the config they started with.
 
@@ -231,7 +231,18 @@ Payload-rule keys: `defaults` fills a key only when the request leaves it unset;
 - `x-ab-session`: reuse the same sandbox and CLI session across requests.
 - The reply carries `agentbridge: { runId, filesChanged, diff }` (and the header `x-agentbridge-run`). Routes: `GET /agent/runs`,
   `GET /agent/runs/:id`, `GET /agent/runs/:id/diff`, `POST /agent/runs/:id/apply` (git apply into the real folder; 409 on conflict),
-  `DELETE /agent/runs/:id`. Nothing touches your folder until you call `apply`. Runs expire after 30 minutes.
+  `DELETE /agent/runs/:id`. Nothing touches your folder until you call `apply`. Idle runs expire after `--agent-run-ttl` minutes
+  (config `agentRunTtlMinutes`, default 30); a run is dropped about 2 minutes after its changes were applied.
+- Sandbox cap: `--agent-max-runs N` (config `agentMaxRuns`, default 8, `0` = unlimited). Running sandboxes and sandboxes with
+  unapplied changes count; applied and deleted ones free their slot. When the proxy is full, a request that would need a new sandbox
+  gets **429** `agent_runs_limit` with a `retry-after` header; apply or `DELETE` finished runs to make room. Runs holding an unapplied
+  diff are never evicted; idle runs known to have no changes and no `x-ab-session` are recycled first. A request with an existing
+  `x-ab-session` reuses its sandbox and never counts as new; concurrent first requests of one session share a single sandbox.
+- Sandboxes are created and diffed asynchronously, so a large copy does not stall other requests or streams.
+- Cleanup after a crash: each sandbox (`<tmp>/ab-wt-XXXXXX`) holds a `.agentbridge-sandbox` marker (pid, origin). On startup (with
+  `--agent-root`) the proxy removes sandboxes older than the TTL whose marker pid is dead, then runs `git worktree prune` in the
+  recorded repo. Only exact-name directories directly in the temp dir, owned by you and carrying a valid marker are touched;
+  anything else (including sandboxes from older versions without a marker) is left alone.
 - Client `tools` are refused in agent mode (the agent has its own).
 
 ## Tool calling

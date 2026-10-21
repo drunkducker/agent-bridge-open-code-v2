@@ -532,6 +532,8 @@ async function cmdServe(_: string[], flags: Record<string, any>) {
     allowNonLoopback: !!flags['allow-non-loopback'],
     configFile: flags.config,
     agentRoot: flags['agent-root'],
+    agentMaxRuns: flags['agent-max-runs'] != null ? num(flags, 'agent-max-runs', { min: 0, int: true }) : undefined,
+    agentRunTtlMinutes: flags['agent-run-ttl'] != null ? num(flags, 'agent-run-ttl', { min: 1 }) : undefined,
     maxPermission: flags['agent-max-permission'],
     ...(sessionTtlMs !== undefined ? { sessionTtlMs } : {}),
     pruneLeftovers: true,
@@ -652,7 +654,7 @@ const HELP = `agentbridge (ab) — drive local claude/codex/opencode/agy/pi/curs
   ab context <session> [--agent a]
   ab handoff <session> --to <agent>
   ab watch <run> | ab wait <run> | ab cancel <run>
-  ab serve [--port][--host][--token][--allow-non-loopback][--fallback a,b:model][--min-remaining-percent N][--wait-for-quota][--max-quota-wait seconds][--config file.json][--session-ttl 7d|12h|0][--agent-root DIR][--agent-max-permission edit|full][--accounts file.json --accept-tos-risk][--log file.jsonl]
+  ab serve [--port][--host][--token][--allow-non-loopback][--fallback a,b:model][--min-remaining-percent N][--wait-for-quota][--max-quota-wait seconds][--config file.json][--session-ttl 7d|12h|0][--agent-root DIR][--agent-max-permission edit|full][--agent-max-runs N][--agent-run-ttl minutes][--accounts file.json --accept-tos-risk][--log file.jsonl]
   ab ui [--port 8788][--open][--token t]            # live dashboard: runs, tokens, context, checkpoints, fallbacks
   ab bridge                                        # stdio MCP server
   ab doctor [--live][--json]

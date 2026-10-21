@@ -122,7 +122,7 @@ async function chat(req: any, res: any, opts: any) {
   assertClientActive(signal);
   const p = await attachImages(prepChat(body, opts, req), body, { signal });
   assertClientActive(signal);
-  const ag = withAgentMode(
+  const ag = await withAgentMode(
     {
       ...p,
       signal,
@@ -156,7 +156,7 @@ async function chat(req: any, res: any, opts: any) {
       ag.abort();
       throw e;
     }
-    ag.finish();
+    await ag.finish();
     const calls = r.toolCalls || [],
       h2 = { ...hdr, ...warnHeaders(r.warning), ...sessionHeader(o, r) };
     const finish = calls.length ? 'tool_calls' : fin(r);
@@ -197,7 +197,7 @@ async function chat(req: any, res: any, opts: any) {
       ag.abort();
       throw e;
     }
-    const extra = ag.finish();
+    const extra = await ag.finish();
     return sendJson(
       res,
       200,
@@ -238,7 +238,7 @@ async function chat(req: any, res: any, opts: any) {
         usage: { prompt_tokens: r.usage.input, completion_tokens: r.usage.output, total_tokens: r.usage.input + r.usage.output },
       });
     }
-    const extra = ag.finish();
+    const extra = await ag.finish();
     if (extra) sseData(res, { id, object: 'chat.completion.chunk', created, model, choices: [], agentbridge: extra });
     sseData(res, '[DONE]');
     res.end();
@@ -322,7 +322,7 @@ async function responses(req: any, res: any, opts: any) {
     { signal }
   );
   assertClientActive(signal);
-  const ag = withAgentMode(
+  const ag = await withAgentMode(
     {
       ...p,
       signal,
@@ -385,7 +385,7 @@ async function responses(req: any, res: any, opts: any) {
       ag.abort();
       throw e;
     }
-    ag.finish();
+    await ag.finish();
     const calls = r.toolCalls || [],
       h2 = { ...hdr, ...warnHeaders(r.warning), ...sessionHeader(o, r) };
     const msg = r.text
@@ -445,7 +445,7 @@ async function responses(req: any, res: any, opts: any) {
       ag.abort();
       throw e;
     }
-    const extra = ag.finish();
+    const extra = await ag.finish();
     return sendJson(
       res,
       200,
@@ -495,7 +495,7 @@ async function responses(req: any, res: any, opts: any) {
     ev(st(r) === 'incomplete' ? 'response.incomplete' : 'response.completed', {
       response: resp(st(r), r.text, r.usage, r.finishReason === 'length'),
     });
-    ag.finish();
+    await ag.finish();
     res.end();
   } catch (e: any) {
     ag.abort();

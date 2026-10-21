@@ -8,6 +8,7 @@
 - **Orphan cleanup:** background children left in an agent's process group after the CLI exits are now terminated, and the exit handler escalates to SIGKILL synchronously.
 - **Proxy scratch directory** is recreated if it was removed while the server runs (previously every API-mode request failed with `cwd does not exist`).
 - Proxy startup trims old per-request telemetry records.
+- **Agent-mode sandbox limits:** `--agent-max-runs` (default 8, `0` = unlimited) caps live sandboxes (429 `agent_runs_limit` + `retry-after`; runs with unapplied diffs are never evicted), `--agent-run-ttl` replaces the fixed 30 min, applied runs are dropped after ~2 min. Sandbox creation/diff/apply are now async (no event-loop stalls), concurrent requests of one `x-ab-session` share one sandbox, and stale `ab-wt-*` sandboxes (marker + dead pid) and their `git worktree` registrations are cleaned at proxy startup.
 
 ### Proxy sessions
 - Keyed (`x-ab-session`) sessions are persisted to `<AGENTBRIDGE_HOME>/proxy-sessions.json`, expire after `--session-ttl` (default 7d, `0` = forever) or beyond the 500 cap, and their claude/codex transcripts are deleted on eviction. Keyed claude sessions use a stable cwd (`<AGENTBRIDGE_HOME>/proxy-cwd`) so they resume after a restart. New `ab sessions prune [--proxy] [--older-than] [--dry-run]`; responses carry `x-agentbridge-session`; SSE writes honor backpressure.

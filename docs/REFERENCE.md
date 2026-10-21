@@ -219,7 +219,8 @@ ab context <session> [--agent a]
 ab handoff <session> --to <agent>
 ab watch <run> | ab wait <run> | ab cancel <run>
 ab serve [--port][--host][--token][--allow-non-loopback][--fallback agent[@N][:model],...]
-         [--session-ttl 7d|12h|0][--config file.json][--agent-root dir][--agent-max-permission read-only|plan|edit|full][--log file.jsonl]
+         [--session-ttl 7d|12h|0][--config file.json][--agent-root dir][--agent-max-permission read-only|plan|edit|full]
+         [--agent-max-runs N (default 8, 0 = unlimited)][--agent-run-ttl minutes (default 30)][--log file.jsonl]
          [--min-remaining-percent N][--wait-for-quota][--max-quota-wait seconds][--accounts file.json --accept-tos-risk]
 ab bridge                                        # stdio MCP server
 ab sweep                                         # delete expired bridge run records; prints {total, removed}

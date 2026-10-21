@@ -300,7 +300,7 @@ test('A09: handleAgentRoutes rejects apply with 403 if modified files or patch h
       get: () => ({ agentRoot: d, maxPermission: 'edit' }),
     };
 
-    const runCtx = prepareAgentRun(
+    const runCtx = await prepareAgentRun(
       { headers: { 'x-ab-cwd': '.' } },
       { token: 'secret', cfg: cfgMock },
       'test-session-a09'
@@ -310,7 +310,7 @@ test('A09: handleAgentRoutes rejects apply with 403 if modified files or patch h
     runCtx.run.busy = 0;
 
     // Modify sandbox diff to attempt modifying an outside file
-    runCtx.run.sandbox.diff = () => ({
+    runCtx.run.sandbox.diffAsync = async () => ({
       diff: '--- a/../../secret.txt\n+++ b/../../secret.txt\n@@ -0,0 +1 @@\n+leak\n',
       files: ['../../secret.txt'],
     });

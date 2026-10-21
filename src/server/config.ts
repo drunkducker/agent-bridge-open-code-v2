@@ -15,6 +15,10 @@ export interface ProxyConfig {
   aliases: Record<string, string>;
   payload: PayloadRule[];
   agentRoot: string | null;
+  /** Max agent sandboxes holding work at once (0 = unlimited). */
+  agentMaxRuns: number;
+  /** Minutes an idle agent run is kept. */
+  agentRunTtlMinutes: number;
   maxPermission: Permission;
   historyBudgetTokens: number;
   accounts: Record<string, any> | null;
@@ -24,6 +28,8 @@ export const DEFAULTS: Readonly<ProxyConfig> = Object.freeze({
   aliases: {},
   payload: [],
   agentRoot: null,
+  agentMaxRuns: 8,
+  agentRunTtlMinutes: 30,
   maxPermission: 'full' as Permission,
   historyBudgetTokens: 0,
   accounts: null,
@@ -45,6 +51,8 @@ export function normalizeConfig(raw: any = {}): ProxyConfig {
     }
   }
   if (c.agentRoot != null && typeof c.agentRoot !== 'string') throw new Error('config.agentRoot must be a string');
+  if (!(Number.isInteger(c.agentMaxRuns) && c.agentMaxRuns >= 0)) throw new Error('config.agentMaxRuns must be an integer >= 0 (0 = unlimited)');
+  if (!(Number.isFinite(c.agentRunTtlMinutes) && c.agentRunTtlMinutes > 0)) throw new Error('config.agentRunTtlMinutes must be a number > 0');
   if (!PERMS.includes(c.maxPermission)) throw new Error(`config.maxPermission must be one of ${PERMS.join('|')}`);
   if (!(Number.isFinite(c.historyBudgetTokens) && c.historyBudgetTokens >= 0)) {
     throw new Error('config.historyBudgetTokens must be a number >= 0');
