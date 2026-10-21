@@ -213,13 +213,13 @@ ab quota [agent] [--threshold %]                             # Proactive quota c
 ab account list [agent] | add <agent> <name> [--copy-current][--login] | use <agent> <name> | remove <agent> <name> | quota
 ab checkpoint create [message] | list | rollback <id> | diff <id>   # git hidden-ref snapshots
 ab memory add "<rule>" | decision "<topic>" "<decision>" [--agent a] | list [--json] | clear
-ab sessions | ab ps | ab top [--once] | ab stats
+ab sessions [prune [--proxy] [--older-than 7d] [--dry-run]] | ab ps | ab top [--once] | ab stats
 ab ui [--port 8788] [--open] [--token t]       # live web dashboard & time-machine UI
 ab context <session> [--agent a]
 ab handoff <session> --to <agent>
 ab watch <run> | ab wait <run> | ab cancel <run>
 ab serve [--port][--host][--token][--allow-non-loopback][--fallback agent[@N][:model],...]
-         [--config file.json][--agent-root dir][--agent-max-permission read-only|plan|edit|full][--log file.jsonl]
+         [--session-ttl 7d|12h|0][--config file.json][--agent-root dir][--agent-max-permission read-only|plan|edit|full][--log file.jsonl]
          [--min-remaining-percent N][--wait-for-quota][--max-quota-wait seconds][--accounts file.json --accept-tos-risk]
 ab bridge                                        # stdio MCP server
 ab sweep                                         # delete expired bridge run records; prints {total, removed}

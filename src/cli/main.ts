@@ -364,7 +364,29 @@ async function cmdFanoutRace(mode: 'fanout' | 'race', _: string[], flags: Record
   }
 }
 
+async function cmdSessionsPrune(flags: Record<string, any>) {
+  const S = await import('../server/sessions.js');
+  let olderThanMs: number;
+  try {
+    olderThanMs = S.parseDuration(flags['older-than'] ?? '7d');
+  } catch (e: any) {
+    throw new UsageError(e.message);
+  }
+  if (olderThanMs <= 0) throw new UsageError('--older-than must be greater than 0');
+  const dryRun = !!flags['dry-run'];
+  const r = S.pruneSessionsFile({ olderThanMs, dryRun });
+  const dirs = S.removeLeftoverClaudeProjects(olderThanMs, dryRun);
+  const files = r.entries.flatMap((e) => e.files);
+  if (flags.json) return out({ dryRun, entries: r.entries.length, kept: r.kept, transcripts: files, projectDirs: dirs });
+  const verb = dryRun ? 'would remove' : 'removed';
+  for (const e of r.entries) out(`${verb} entry ${e.entry.agent} ${e.entry.id}  last used ${new Date(e.entry.lastUsed || 0).toISOString()}`);
+  for (const f of files) out(`${verb} transcript ${f}`);
+  for (const d of dirs) out(`${verb} leftover project dir ${d}`);
+  out(`${dryRun ? '[dry-run] ' : ''}${r.entries.length} session entries (${files.length} transcripts), ${dirs.length} leftover project dirs; ${r.kept} entries kept`);
+}
+
 async function cmdSessions(_: string[], flags: Record<string, any>) {
+  if (_[0] === 'prune') return cmdSessionsPrune(flags);
   const rows = listSessions().sort((a: any, b: any) => (b.lastAt || 0) - (a.lastAt || 0));
   if (flags.json) return out(rows);
   if (!rows.length) return out('(no sessions)');
@@ -495,6 +517,14 @@ async function cmdCancel(_: string[], flags: Record<string, any>) {
 async function cmdServe(_: string[], flags: Record<string, any>) {
   if (flags.yolo) throw new UsageError('--yolo is only available for a single Codex run');
   const { startProxy } = await import('../server/index.js');
+  let sessionTtlMs: number | undefined;
+  if (flags['session-ttl'] !== undefined) {
+    try {
+      sessionTtlMs = (await import('../server/sessions.js')).parseDuration(flags['session-ttl']);
+    } catch (e: any) {
+      throw new UsageError(`--session-ttl: ${e.message}`);
+    }
+  }
   const p = await startProxy({
     port: flags.port ? num(flags, 'port', { min: 0, int: true }) : 8787,
     host: flags.host,
@@ -503,6 +533,8 @@ async function cmdServe(_: string[], flags: Record<string, any>) {
     configFile: flags.config,
     agentRoot: flags['agent-root'],
     maxPermission: flags['agent-max-permission'],
+    ...(sessionTtlMs !== undefined ? { sessionTtlMs } : {}),
+    pruneLeftovers: true,
     accounts: flags.accounts ? JSON.parse((await import('node:fs')).readFileSync(flags.accounts, 'utf8')) : undefined,
     acceptTosRisk: !!flags['accept-tos-risk'],
     logFile: flags.log,
@@ -616,11 +648,11 @@ const HELP = `agentbridge (ab) — drive local claude/codex/opencode/agy/pi/curs
   ab config [list] | get <key> | set <key> <val> [--global] | reset [key]   # manage default permissions & ceilings
   ab checkpoint create [message] | list | rollback <id> | diff <id>   # git hidden-ref snapshots
   ab memory add "<rule>" | decision "<topic>" "<decision>" [--agent a] | list [--json] | clear
-  ab sessions | ab ps | ab top [--once] | ab stats
+  ab sessions [prune [--proxy] [--older-than 7d] [--dry-run]] | ab ps | ab top [--once] | ab stats
   ab context <session> [--agent a]
   ab handoff <session> --to <agent>
   ab watch <run> | ab wait <run> | ab cancel <run>
-  ab serve [--port][--host][--token][--allow-non-loopback][--fallback a,b:model][--min-remaining-percent N][--wait-for-quota][--max-quota-wait seconds][--config file.json][--agent-root DIR][--agent-max-permission edit|full][--accounts file.json --accept-tos-risk][--log file.jsonl]
+  ab serve [--port][--host][--token][--allow-non-loopback][--fallback a,b:model][--min-remaining-percent N][--wait-for-quota][--max-quota-wait seconds][--config file.json][--session-ttl 7d|12h|0][--agent-root DIR][--agent-max-permission edit|full][--accounts file.json --accept-tos-risk][--log file.jsonl]
   ab ui [--port 8788][--open][--token t]            # live dashboard: runs, tokens, context, checkpoints, fallbacks
   ab bridge                                        # stdio MCP server
   ab doctor [--live][--json]
@@ -634,7 +666,9 @@ export async function main(): Promise<void> {
   const cmd = argv[0];
   let _: string[], flags: Record<string, any>;
   try {
-    ({ _, flags } = parseArgs(argv.slice(1)));
+    // `ab sessions prune` takes bare --proxy/--dry-run switches that the shared parser would treat as value flags.
+    const rest = argv.slice(1).map((a) => (cmd === 'sessions' && (a === '--proxy' || a === '--dry-run') ? `${a}=true` : a));
+    ({ _, flags } = parseArgs(rest));
   } catch (e) {
     fail(e, false);
     return;

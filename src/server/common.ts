@@ -1,5 +1,5 @@
 // Shared helpers for the OpenAI/Anthropic compat proxy
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { randomBytes, createHash } from 'node:crypto';
@@ -10,6 +10,7 @@ import { isInstalled } from '../core/readiness.js';
 import { RunOptions } from '../types/index.js';
 import { getProactiveQuotaStatus } from '../quota/proactive.js';
 import { withTimeout } from '../extras/doctor.js';
+import { SessionMap, proxyCwdDir } from './sessions.js';
 
 const run = (agent: any, opts: any) => runTracked(agent, opts, { origin: 'proxy' });
 
@@ -309,7 +310,7 @@ export function joinSystem(parts: string[], extra: string[] = [], mode = 'api'):
 
 export async function drive(
   o: any,
-  { onStart, onDelta }: { onStart: () => void; onDelta: (delta: string) => void }
+  { onStart, onDelta }: { onStart: () => void; onDelta: (delta: string) => void | Promise<void> | undefined }
 ): Promise<any> {
   const it = runAgent(o);
   let started = false;
@@ -326,7 +327,7 @@ export async function drive(
       started = true;
       onStart();
     }
-    onDelta(x.value.delta);
+    await onDelta(x.value.delta);
   }
 }
 
@@ -343,21 +344,8 @@ export function disposeProxyScratch(): void {
     /* best-effort */
   }
 }
-const SESSIONS_CAP = 500;
-class SessionMap extends Map<string, { agent: string; id: string }> {
-  // Evict-oldest cap: rewriting an existing key moves it to the newest position.
-  set(key: string, v: { agent: string; id: string }): this {
-    super.delete(key);
-    const out = super.set(key, v);
-    while (this.size > SESSIONS_CAP) {
-      const oldest = this.keys().next();
-      if (oldest.done) break;
-      super.delete(oldest.value);
-    }
-    return out;
-  }
-}
 export const sessions = new SessionMap();
+export { SessionMap };
 export const est = (s?: string): number => Math.ceil((s || '').length / 4);
 const HOLD = Symbol('hold');
 const FINISH: Record<string, string> = {
@@ -406,7 +394,7 @@ export async function* runAgent(o: any): AsyncGenerator<{ type: string; delta: s
     known = key ? sessions.get(key) : undefined;
   if (!known && o.sessionKey) {
     for (const [k, v] of sessions.entries()) {
-      if (k.endsWith(`:${o.sessionKey}`) && v?.id) {
+      if (k.endsWith(`:${o.sessionKey}`) && v?.id && sessions.get(k)) {
         known = v;
         key = k;
         break;
@@ -418,13 +406,26 @@ export async function* runAgent(o: any): AsyncGenerator<{ type: string; delta: s
   const onAbort = () => ac.abort();
   if (o.signal?.aborted) ac.abort();
   else o.signal?.addEventListener('abort', onAbort, { once: true });
+  // Keyed claude sessions resume only from the cwd they were created in: use a stable dir, not the random scratch one.
+  const dispatchName = typeof dispatchAgent === 'string' ? dispatchAgent : dispatchAgent?.name;
+  let keyedCwd: string | undefined;
+  if (!isAgent && o.sessionKey && (aname === 'claude' || dispatchName === 'claude')) {
+    try {
+      keyedCwd = proxyCwdDir();
+      mkdirSync(keyedCwd, { recursive: true });
+    } catch {
+      keyedCwd = undefined;
+    }
+  }
   const base: any = {
     systemPrompt: isAgent ? o.systemPrompt : [o.systemPrompt, NO_TOOLS].filter(Boolean).join('\n\n'),
-    cwd: isAgent ? o.cwd : cwd,
+    cwd: isAgent ? o.cwd : keyedCwd || cwd,
     permissions: isAgent ? o.permissions || 'full' : 'read-only',
     signal: ac.signal,
     timeoutMs: o.timeoutMs || 300000,
   };
+  if (known?.cwd && !isAgent && dispatchName === 'claude' && known.cwd !== base.cwd) known = undefined; // resume is cwd-scoped
+  if (known && o.sessionKey) o.sessionOut = { id: known.id };
   if (model) base.model = model;
   if (isAgent && o.mcpServers) base.mcpServers = o.mcpServers;
   if (o.images?.length) base.images = o.images;
@@ -523,7 +524,10 @@ export async function* runAgent(o: any): AsyncGenerator<{ type: string; delta: s
             break;
           }
           const e = x.value;
-          if (e.type === 'session') sid = e.id;
+          if (e.type === 'session') {
+            sid = e.id;
+            if (o.sessionKey) o.sessionOut = { id: e.id };
+          }
           else if (e.type === 'text') {
             raw += e.delta;
             const stopNow = route(e.delta);
@@ -604,9 +608,12 @@ export async function* runAgent(o: any): AsyncGenerator<{ type: string; delta: s
       sid = r?.sessionId || sid;
       const effectiveAgent = r?.fallback?.used || known?.agent || aname;
       if (acct) o.pool.ok(aname, acct.name);
-      if (key && sid) sessions.set(key, { agent: effectiveAgent, id: sid });
+      if (o.sessionKey && sid) o.sessionOut = { id: sid };
+      const cfgDir = effectiveAgent === 'claude' ? env?.CLAUDE_CONFIG_DIR : effectiveAgent === 'codex' ? env?.CODEX_HOME : undefined;
+      const rec = { cwd: base.cwd as string | undefined, ...(cfgDir ? { configDir: cfgDir } : {}) };
+      if (key && sid) sessions.set(key, { agent: effectiveAgent, id: sid, ...rec });
       if (o.sessionKey && sid && effectiveAgent !== aname) {
-        sessions.set(`${effectiveAgent}:${acct ? acct.name + ':' : ''}${o.sessionKey}`, { agent: effectiveAgent, id: sid });
+        sessions.set(`${effectiveAgent}:${acct ? acct.name + ':' : ''}${o.sessionKey}`, { agent: effectiveAgent, id: sid, ...rec });
       }
       const u = !limited && r?.usage ? r.usage : {};
       const finishReason = toolCalls.length
@@ -711,8 +718,41 @@ export function sseStart(res: any, headers: Record<string, string> = {}): void {
   res.flushHeaders?.();
 }
 
-export const sseData = (res: any, obj: any, event?: string): void =>
+/** Writes one SSE frame; returns false when the socket buffer is full (pair with `sseWait`). */
+export const sseData = (res: any, obj: any, event?: string): boolean =>
   res.write((event ? `event: ${event}\n` : '') + `data: ${typeof obj === 'string' ? obj : JSON.stringify(obj)}\n\n`);
+
+const STALL_MS = Number(process.env.AGENTBRIDGE_SSE_STALL_MS) || 120_000;
+/**
+ * Backpressure: when `ok` is false (res.write() returned false) wait for 'drain'; resolve on 'close'/'error'. A client that
+ * stays connected but never reads is dropped after STALL_MS so buffered output cannot grow without bound.
+ */
+export function sseWait(res: any, ok: boolean | void): Promise<void> | undefined {
+  if (ok !== false || res.destroyed || res.writableEnded) return undefined;
+  return new Promise<void>((resolve) => {
+    const t = setTimeout(() => {
+      res.destroy?.();
+      done();
+    }, STALL_MS);
+    t.unref?.();
+    const done = () => {
+      clearTimeout(t);
+      res.removeListener('drain', done);
+      res.removeListener('close', done);
+      res.removeListener('error', done);
+      resolve();
+    };
+    res.once('drain', done);
+    res.once('close', done);
+    res.once('error', done);
+  });
+}
+
+/** Response header naming the CLI session behind a keyed request. */
+export const sessionHeader = (o: any, r?: any): Record<string, string> => {
+  const id = r?.sessionId || o?.sessionOut?.id;
+  return o?.sessionKey && typeof id === 'string' && /^[\w.-]{1,128}$/.test(id) ? { 'x-agentbridge-session': id } : {};
+};
 
 /** AbortSignal that fires when the client goes away before we finish. */
 export function clientAbort(res: any): AbortSignal {
