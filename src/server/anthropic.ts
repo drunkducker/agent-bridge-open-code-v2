@@ -122,7 +122,7 @@ async function messages(req: any, res: any, opts: any) {
     throw new HttpError(400, 'max_tokens: Field required (positive integer)', 'invalid_request_error');
   const p = await attachImages(prep(body, opts, req), body, { signal });
   assertClientActive(signal);
-  const ag = withAgentMode(
+  const ag = await withAgentMode(
     {
       target: p.target,
       prompt: p.prompt,
@@ -166,7 +166,7 @@ async function messages(req: any, res: any, opts: any) {
       ag.abort();
       throw e;
     }
-    ag.finish();
+    await ag.finish();
     const calls = r.toolCalls || [],
       h2 = { ...hdr, ...warnHeaders(r.warning) };
     const blocks = [...(r.text ? [{ type: 'text', text: r.text }] : []), ...anthropicBlocks(calls)];
@@ -200,7 +200,7 @@ async function messages(req: any, res: any, opts: any) {
       ag.abort();
       throw e;
     }
-    const extra = ag.finish();
+    const extra = await ag.finish();
     return sendJson(
       res,
       200,
@@ -231,7 +231,7 @@ async function messages(req: any, res: any, opts: any) {
     ev('content_block_stop', { index: 0 });
     ev('message_delta', { delta: stopOf(r), usage: { input_tokens: r.usage.input, output_tokens: r.usage.output } });
     ev('message_stop', {});
-    ag.finish();
+    await ag.finish();
     res.end();
   } catch (e: any) {
     ag.abort();

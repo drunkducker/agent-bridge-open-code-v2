@@ -8,7 +8,8 @@ import { HttpError, sendJson, listModels, disposeProxyScratch } from './common.j
 import * as openai from './openai.js';
 import * as anthropic from './anthropic.js';
 import { createConfig, ConfigHolder, ProxyConfig } from './config.js';
-import { handleAgentRoutes, disposeAgentRuns, createAgentStore, AgentStore } from './agent.js';
+import { handleAgentRoutes, disposeAgentRuns, createAgentStore, agentTtlMs, AgentStore } from './agent.js';
+import { cleanupStaleSandboxes } from '../extras/worktree.js';
 import { createStats } from './stats.js';
 import { createPool, assertAccepted, TOS_WARNING, AccountPool } from './pool.js';
 import type { QuotaPolicy } from '../types/index.js';
@@ -32,6 +33,8 @@ export interface ProxyOptions {
   config?: Partial<ProxyConfig>;
   configFile?: string;
   agentRoot?: string;
+  agentMaxRuns?: number;
+  agentRunTtlMinutes?: number;
   maxPermission?: any;
   accounts?: any;
   acceptTosRisk?: boolean;
@@ -90,6 +93,8 @@ export async function startProxy(o: ProxyOptions = {}): Promise<RunningProxy> {
         ...(o.config || {}),
         ...(o.agentRoot ? { agentRoot: o.agentRoot } : {}),
         ...(o.maxPermission ? { maxPermission: o.maxPermission } : {}),
+        ...(o.agentMaxRuns != null ? { agentMaxRuns: o.agentMaxRuns } : {}),
+        ...(o.agentRunTtlMinutes != null ? { agentRunTtlMinutes: o.agentRunTtlMinutes } : {}),
       },
       { file: o.configFile }
     );
@@ -103,6 +108,8 @@ export async function startProxy(o: ProxyOptions = {}): Promise<RunningProxy> {
   }
   const stats = createStats({ logFile: o.logFile });
   const agentStore = o.agentStore || createAgentStore();
+  // Leftovers of a killed proxy (SIGKILL never runs cleanup): remove stale, marked, dead-pid sandboxes.
+  if (cfg.get().agentRoot) cleanupStaleSandboxes({ ttlMs: agentTtlMs({ cfg }) }).catch(() => {});
   const sessionStore = o.sessionStore || new Map<string, { agent: string; id: string }>();
   const opts = {
     timeoutMs: o.timeoutMs || 300000,
@@ -221,6 +228,8 @@ if (isServerEntry()) {
     allowNonLoopback: a.includes('--allow-non-loopback'),
     configFile: get('--config'),
     agentRoot: get('--agent-root'),
+    agentMaxRuns: get('--agent-max-runs') != null ? Number(get('--agent-max-runs')) : undefined,
+    agentRunTtlMinutes: get('--agent-run-ttl') != null ? Number(get('--agent-run-ttl')) : undefined,
     maxPermission: get('--agent-max-permission'),
     accounts: get('--accounts') ? JSON.parse(readFileSync(get('--accounts')!, 'utf8')) : undefined,
     acceptTosRisk: a.includes('--accept-tos-risk'),
