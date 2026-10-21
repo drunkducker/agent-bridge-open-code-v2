@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Resource safety
+- Resource bounds: `/api/stats` no longer blocks the event loop (async, bounded opencode exports, 3 s response cache with in-flight coalescing); age+count retention for telemetry sessions, endpoint sessions and read inbox messages (run at startup and daily; `ab sweep` reports per-category counts); Codex app-server daemon pool is LRU-capped and evicts on idle/close/exit; in-process session maps are LRU-bounded; MCP stdio and SSE lines are capped at 16 MB. See docs/TELEMETRY.md.
 - **Concurrent process cap:** `AGENTBRIDGE_MAX_PROCS` (default 24, `0` = unlimited) limits live agent processes per AgentBridge process. Beyond it, spawns fail with `RATE_LIMITED` (HTTP 429 with `retry-after` in the proxy) instead of exhausting RAM.
 - **Orphan cleanup:** background children left in an agent's process group after the CLI exits are now terminated, and the exit handler escalates to SIGKILL synchronously.
 - **Proxy scratch directory** is recreated if it was removed while the server runs (previously every API-mode request failed with `cwd does not exist`).

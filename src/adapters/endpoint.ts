@@ -1,12 +1,12 @@
 // HTTP "endpoint" agents: any OpenAI-compatible (chat/completions) or Anthropic-compatible (messages) base URL
-import { mkdirSync, writeFileSync, readFileSync, readdirSync, renameSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, readdirSync, renameSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { AgentError, retryAfterMs, retryHeaderMs } from '../core/errors.js';
 import { resolveBinary } from '../core/spawn.js';
 import { ev } from '../core/events.js';
 import { validateOptions } from '../index.js';
-import { home } from '../bridge/runs.js';
+import { home, scheduleRetention } from '../bridge/runs.js';
 import { extractJson } from '../extras/schema.js';
 import { AgentAdapter, AgentEvent, RunResult } from '../types/index.js';
 
@@ -123,6 +123,7 @@ function readSession(id: string, env: NodeJS.ProcessEnv): any {
   }
 }
 function writeSession(rec: any, env: NodeJS.ProcessEnv): void {
+  scheduleRetention(env, { delayMs: 1500 });
   mkdirSync(sessDir(env), { recursive: true });
   const f = path.join(sessDir(env), `${rec.id}.json`),
     tmp = `${f}.${process.pid}.tmp`;
@@ -134,17 +135,27 @@ function writeSession(rec: any, env: NodeJS.ProcessEnv): void {
 const norm = (p: string) => (process.platform === 'win32' ? p.toLowerCase() : p);
 
 function latestSession(endpoint: string, cwd: string, env: NodeJS.ProcessEnv): any {
-  let best: any;
+  // Stat first (cheap), then read newest-first and stop at the first match instead of parsing every history file.
+  const cands: { id: string; m: number }[] = [];
   try {
     for (const f of readdirSync(sessDir(env))) {
       if (!f.endsWith('.json') || !UUID.test(f.slice(0, -5))) continue;
-      const r = readSession(f.slice(0, -5), env);
-      if (r && r.endpoint === endpoint && r.cwd && norm(r.cwd) === norm(cwd) && !busy.has(r.id) && (!best || r.updatedAt > best.updatedAt)) best = r;
+      try {
+        cands.push({ id: f.slice(0, -5), m: statSync(path.join(sessDir(env), f)).mtimeMs });
+      } catch {
+        /* raced */
+      }
     }
   } catch {
     /* none */
   }
-  return best;
+  cands.sort((a, b) => b.m - a.m);
+  for (const c of cands.slice(0, 200)) {
+    if (busy.has(c.id)) continue;
+    const r = readSession(c.id, env);
+    if (r && r.endpoint === endpoint && r.cwd && norm(r.cwd) === norm(cwd)) return r;
+  }
+  return undefined;
 }
 
 const headersFor = (cfg: EndpointConfig, env: NodeJS.ProcessEnv): Record<string, string> => {
@@ -158,11 +169,15 @@ const headersFor = (cfg: EndpointConfig, env: NodeJS.ProcessEnv): Record<string,
   return h;
 };
 
-async function* sse(res: Response): AsyncGenerator<string, void, unknown> {
+export const SSE_MAX_LINE = 16 * 1024 * 1024;
+
+export async function* sse(res: Response, maxLine = SSE_MAX_LINE): AsyncGenerator<string, void, unknown> {
   const dec = new TextDecoder();
   let buf = '';
   for await (const chunk of res.body as any) {
     buf += dec.decode(chunk, { stream: true });
+    if (buf.length > maxLine && buf.indexOf('\n') < 0)
+      throw new AgentError('AGENT_FAILED', `SSE event exceeds ${maxLine} bytes without a newline; aborting stream`);
     let i: number;
     while ((i = buf.indexOf('\n')) >= 0) {
       const line = buf.slice(0, i).replace(/\r$/, '');

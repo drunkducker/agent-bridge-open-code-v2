@@ -1261,8 +1261,23 @@ export function serve({
   let buf = '',
     scan = 0;
   (input as any).setEncoding?.('utf8');
+  const maxLine = Number(env.AGENTBRIDGE_MCP_MAX_LINE_BYTES) || 16 * 1024 * 1024;
+  let discarding = false; // dropping the rest of an oversized line until its newline
   input.on('data', (chunk: any) => {
+    if (discarding) {
+      const nl = String(chunk).indexOf('\n');
+      if (nl < 0) return;
+      discarding = false;
+      chunk = String(chunk).slice(nl + 1);
+    }
     buf += chunk;
+    if (buf.length > maxLine && buf.indexOf('\n') < 0) {
+      buf = '';
+      scan = 0;
+      discarding = true;
+      send({ jsonrpc: '2.0', id: null, error: { code: -32600, message: `Request line exceeds ${maxLine} bytes; dropped` } });
+      return;
+    }
     let i: number;
     while ((i = buf.indexOf('\n', scan)) >= 0) {
       const line = buf.slice(0, i).trim();

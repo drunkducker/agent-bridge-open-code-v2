@@ -3,6 +3,8 @@ export { runWithTelemetry, runTracked, askWithTelemetry } from './track.js';
 export type { TelemetryOptions } from './track.js';
 export {
   stats,
+  statsAsync,
+  readSessionContextAsync,
   contextOf,
   setContextWindow,
   windowFor,
