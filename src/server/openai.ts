@@ -30,6 +30,8 @@ import {
   sendJson,
   sseStart,
   sseData,
+  sseWait,
+  sessionHeader,
   clientAbort,
   assertClientActive,
   contentText,
@@ -156,7 +158,7 @@ async function chat(req: any, res: any, opts: any) {
     }
     ag.finish();
     const calls = r.toolCalls || [],
-      h2 = { ...hdr, ...warnHeaders(r.warning) };
+      h2 = { ...hdr, ...warnHeaders(r.warning), ...sessionHeader(o, r) };
     const finish = calls.length ? 'tool_calls' : fin(r);
     const usage = {
       prompt_tokens: r.usage.input,
@@ -210,7 +212,7 @@ async function chat(req: any, res: any, opts: any) {
         usage: { prompt_tokens: r.usage.input, completion_tokens: r.usage.output, total_tokens: r.usage.input + r.usage.output },
         ...(extra ? { agentbridge: extra } : {}),
       },
-      hdr
+      { ...hdr, ...sessionHeader(o, r) }
     );
   }
   let started = false;
@@ -218,11 +220,11 @@ async function chat(req: any, res: any, opts: any) {
     const r = await drive(o, {
       onStart() {
         started = true;
-        sseStart(res, hdr);
+        sseStart(res, { ...hdr, ...sessionHeader(o) });
         sseData(res, mk({ role: 'assistant', content: '' }, null));
       },
       onDelta(d: string) {
-        if (d) sseData(res, mk({ content: d }, null));
+        if (d) return sseWait(res, sseData(res, mk({ content: d }, null)));
       },
     });
     sseData(res, mk({}, fin(r)));
@@ -385,7 +387,7 @@ async function responses(req: any, res: any, opts: any) {
     }
     ag.finish();
     const calls = r.toolCalls || [],
-      h2 = { ...hdr, ...warnHeaders(r.warning) };
+      h2 = { ...hdr, ...warnHeaders(r.warning), ...sessionHeader(o, r) };
     const msg = r.text
       ? {
           id: msgId,
@@ -451,7 +453,7 @@ async function responses(req: any, res: any, opts: any) {
         ...resp(st(r), r.text, r.usage, r.finishReason === 'length'),
         ...(extra ? { agentbridge: extra } : {}),
       },
-      hdr
+      { ...hdr, ...sessionHeader(o, r) }
     );
   }
   let started = false,
@@ -461,7 +463,7 @@ async function responses(req: any, res: any, opts: any) {
     const r = await drive(o, {
       onStart() {
         started = true;
-        sseStart(res, hdr);
+        sseStart(res, { ...hdr, ...sessionHeader(o) });
         ev('response.created', { response: resp('in_progress') });
         ev('response.in_progress', { response: resp('in_progress') });
         ev('response.output_item.added', {
@@ -476,7 +478,7 @@ async function responses(req: any, res: any, opts: any) {
         });
       },
       onDelta(d: string) {
-        if (d) ev('response.output_text.delta', { item_id: msgId, output_index: 0, content_index: 0, delta: d });
+        if (d) return sseWait(res, ev('response.output_text.delta', { item_id: msgId, output_index: 0, content_index: 0, delta: d }));
       },
     });
     ev('response.output_text.done', { item_id: msgId, output_index: 0, content_index: 0, text: r.text });

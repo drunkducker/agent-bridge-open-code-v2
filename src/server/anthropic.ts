@@ -20,6 +20,8 @@ import {
   sendJson,
   sseStart,
   sseData,
+  sseWait,
+  sessionHeader,
   clientAbort,
   assertClientActive,
   contentText,
@@ -168,7 +170,7 @@ async function messages(req: any, res: any, opts: any) {
     }
     ag.finish();
     const calls = r.toolCalls || [],
-      h2 = { ...hdr, ...warnHeaders(r.warning) };
+      h2 = { ...hdr, ...warnHeaders(r.warning), ...sessionHeader(o, r) };
     const blocks = [...(r.text ? [{ type: 'text', text: r.text }] : []), ...anthropicBlocks(calls)];
     const so = calls.length ? { stop_reason: 'tool_use', stop_sequence: null } : stopOf(r);
     if (!body.stream)
@@ -211,7 +213,7 @@ async function messages(req: any, res: any, opts: any) {
         usage: usageOf(r.usage),
         ...(extra ? { agentbridge: extra } : {}),
       },
-      hdr
+      { ...hdr, ...sessionHeader(o, r) }
     );
   }
   let started = false;
@@ -219,13 +221,13 @@ async function messages(req: any, res: any, opts: any) {
     const r = await drive(o, {
       onStart() {
         started = true;
-        sseStart(res, hdr);
+        sseStart(res, { ...hdr, ...sessionHeader(o) });
         ev('message_start', { message: { ...skeleton, usage: { input_tokens: est(p.prompt), output_tokens: 1 } } });
         ev('content_block_start', { index: 0, content_block: { type: 'text', text: '' } });
         ev('ping', {});
       },
       onDelta(d: string) {
-        if (d) ev('content_block_delta', { index: 0, delta: { type: 'text_delta', text: d } });
+        if (d) return sseWait(res, ev('content_block_delta', { index: 0, delta: { type: 'text_delta', text: d } }));
       },
     });
     ev('content_block_stop', { index: 0 });

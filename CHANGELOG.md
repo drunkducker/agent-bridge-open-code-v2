@@ -8,6 +8,9 @@
 - **Proxy scratch directory** is recreated if it was removed while the server runs (previously every API-mode request failed with `cwd does not exist`).
 - Proxy startup trims old per-request telemetry records.
 
+### Proxy sessions
+- Keyed (`x-ab-session`) sessions are persisted to `<AGENTBRIDGE_HOME>/proxy-sessions.json`, expire after `--session-ttl` (default 7d, `0` = forever) or beyond the 500 cap, and their claude/codex transcripts are deleted on eviction. Keyed claude sessions use a stable cwd (`<AGENTBRIDGE_HOME>/proxy-cwd`) so they resume after a restart. New `ab sessions prune [--proxy] [--older-than] [--dry-run]`; responses carry `x-agentbridge-session`; SSE writes honor backpressure.
+
 ### API
 - `runAsSubagent` and `mcpConfigFor` are exported from the package root (the documented deep imports were blocked by the `exports` map).
 

@@ -4,7 +4,8 @@ import { readFileSync, realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { timingSafeEqual } from 'node:crypto';
 import { listTrackedRuns } from '../telemetry/stats.js';
-import { HttpError, sendJson, listModels, disposeProxyScratch } from './common.js';
+import { HttpError, sendJson, listModels, disposeProxyScratch, sessions } from './common.js';
+import { DEFAULT_TTL_MS, parseDuration, removeLeftoverClaudeProjects } from './sessions.js';
 import * as openai from './openai.js';
 import * as anthropic from './anthropic.js';
 import { createConfig, ConfigHolder, ProxyConfig } from './config.js';
@@ -42,6 +43,14 @@ export interface ProxyOptions {
   quotaPolicy?: QuotaPolicy;
   agentStore?: AgentStore;
   sessionStore?: Map<string, { agent: string; id: string }>;
+  /** Idle TTL of keyed (x-ab-session) sessions in ms; default 7 days, 0 = keep forever. */
+  sessionTtlMs?: number;
+  /** Persisted key->session map; default <AGENTBRIDGE_HOME>/proxy-sessions.json, false = in-memory only. */
+  sessionsFile?: string | false;
+  /** Max keyed sessions kept (default 500). */
+  sessionCap?: number;
+  /** At startup also remove leftover claude scratch project dirs (agentbridge-proxy-*) older than the TTL. */
+  pruneLeftovers?: boolean;
 }
 
 export interface RunningProxy {
@@ -100,6 +109,16 @@ export async function startProxy(o: ProxyOptions = {}): Promise<RunningProxy> {
     assertAccepted(o.acceptTosRisk);
     pool = createPool(rawAccounts);
     console.error(TOS_WARNING);
+  }
+  const ttlMs = o.sessionTtlMs ?? DEFAULT_TTL_MS;
+  if (!Number.isFinite(ttlMs) || ttlMs < 0) throw new Error('sessionTtlMs must be a non-negative number');
+  sessions.attach({ file: o.sessionsFile, ttlMs, ...(o.sessionCap !== undefined ? { cap: o.sessionCap } : {}) });
+  if (o.pruneLeftovers && ttlMs > 0) {
+    try {
+      removeLeftoverClaudeProjects(ttlMs);
+    } catch {
+      /* best-effort */
+    }
   }
   const stats = createStats({ logFile: o.logFile });
   const agentStore = o.agentStore || createAgentStore();
@@ -172,7 +191,11 @@ export async function startProxy(o: ProxyOptions = {}): Promise<RunningProxy> {
       else res.end();
     }
   });
-  await new Promise<void>((ok, bad) => {
+  await new Promise<void>((ok, bad0) => {
+    const bad = (e: Error) => {
+      sessions.detach();
+      bad0(e);
+    };
     server.once('error', bad);
     // Per-request run records are only pruned when listed; trim them at startup so a proxy-only deployment cannot grow forever.
     try {
@@ -191,6 +214,7 @@ export async function startProxy(o: ProxyOptions = {}): Promise<RunningProxy> {
     close: () =>
       new Promise<void>((r) => {
         cfg.close();
+        sessions.detach();
         disposeAgentRuns(agentStore);
         disposeProxyScratch();
         server.close(() => r());
@@ -225,6 +249,8 @@ if (isServerEntry()) {
     accounts: get('--accounts') ? JSON.parse(readFileSync(get('--accounts')!, 'utf8')) : undefined,
     acceptTosRisk: a.includes('--accept-tos-risk'),
     logFile: get('--log'),
+    ...(get('--session-ttl') !== undefined ? { sessionTtlMs: parseDuration(get('--session-ttl')!) } : {}),
+    pruneLeftovers: true,
   }).then(
     (p) => console.log(`agentbridge proxy listening on ${p.url}`),
     (e) => {
