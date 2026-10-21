@@ -411,6 +411,21 @@ export interface WithAgentModeResult {
 
 export async function withAgentMode(o: any, req: any, opts: any): Promise<WithAgentModeResult> {
   if (o.target.mode !== 'agent') return { o, headers: {}, finish: () => null, abort() {} };
+  const sb = req.headers['x-ab-sandbox'];
+  if (typeof sb === 'string' && sb.trim()) {
+    if (sb.trim().toLowerCase() !== 'none') {
+      throw new HttpError(400, 'x-ab-sandbox must be "none" (omit it for the default sandbox)', 'invalid_request_error', 'bad_sandbox');
+    }
+    // In-place: the agent works directly in x-ab-cwd (still inside agentRoot, token-gated, permission-capped).
+    // No sandbox, no diff/apply, no run slot; only the global process cap applies.
+    const { origin, permissions } = agentSettings(req, opts);
+    return {
+      o: { ...o, mode: 'agent', cwd: origin, permissions, timeoutMs: opts.agentTimeoutMs || 20 * 60 * 1000 },
+      headers: { 'x-agentbridge-sandbox': 'none' },
+      finish: () => ({ mode: 'in-place', cwd: origin }),
+      abort() {},
+    };
+  }
   const ctx = await prepareAgentRun(req, opts, o.sessionKey);
   let settled = false;
   return {

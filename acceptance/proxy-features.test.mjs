@@ -21,7 +21,7 @@ function fake(chunks, extra = {}) {
 
 let proxy, current = fake(['Hello ', 'world']);
 const adapters = { fake: { name: 'fake', run: (o) => current.run(o) } };
-before(async () => { proxy = await startProxy({ port: 0, adapters, config: { aliases: { quick: 'fake/m1' }, payload: [{ match: 'fake/*', defaults: { effort: 'low' } }] } }); });
+before(async () => { proxy = await startProxy({ port: 0, sessionsFile: false, adapters, config: { aliases: { quick: 'fake/m1' }, payload: [{ match: 'fake/*', defaults: { effort: 'low' } }] } }); });
 after(() => proxy?.close());
 
 const post = (path, body, headers = {}) => fetch(proxy.url + path, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) });

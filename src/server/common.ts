@@ -120,8 +120,10 @@ export function applyPayloadRules(cfg: ConfigHolder | undefined, id: string, o: 
 }
 
 let modelCache = { at: 0, list: null as string[] | null };
-export async function listModels(): Promise<string[]> {
-  if (modelCache.list && Date.now() - modelCache.at < 60000) return modelCache.list;
+let modelProbe: Promise<string[]> | null = null;
+const MODEL_TTL_MS = 60000;
+
+async function probeModels(): Promise<string[]> {
   const out: string[] = [];
   const add = (id: string) => {
     if (!out.includes(id)) out.push(id);
@@ -143,6 +145,21 @@ export async function listModels(): Promise<string[]> {
   out.sort();
   modelCache = { at: Date.now(), list: out };
   return out;
+}
+
+/** Model list with single-flight probing and stale-while-revalidate: concurrent callers share one probe set, and an
+ *  expired list is served immediately while a fresh one is fetched in the background. */
+export async function listModels(): Promise<string[]> {
+  const fresh = modelCache.list && Date.now() - modelCache.at < MODEL_TTL_MS;
+  if (fresh) return modelCache.list!;
+  const probe = (modelProbe ||= probeModels().finally(() => {
+    modelProbe = null;
+  }));
+  if (modelCache.list) {
+    probe.catch(() => {});
+    return modelCache.list;
+  }
+  return probe;
 }
 
 // ---------- effort ----------

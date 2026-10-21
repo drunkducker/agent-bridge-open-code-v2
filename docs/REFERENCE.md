@@ -265,7 +265,7 @@ Notes:
 - `<agent>` is a built-in (`claude`, `codex`, `opencode`, `agy`, `pi`, `cursor`, `grok`, `gemini`, `devin`, `acp`), `ollama` or any [endpoint](#http-endpoints-ollama-and-any-base-url) you configured. Targets for `fanout`/`race` can include a model: `claude:haiku`, `opencode:provider/model`.
 - Short flags: `-m` `--model`, `-e` `--effort`, `-h` `--help`, `-j` `--json`, `-s` `--stream`, `-w` `--worktree`, `-t` `--timeout`, `-C` `--cwd`, `-y` `--yes`.
 - `--isolated` runs the agent without your local config, plugins and slash commands where the CLI supports it; `--app-server` is shorthand for `--transport app-server` (Codex warm daemon, see [Execution Transports](#execution-transports-cli-vs-persistent-app-server-mode)); `--offline` disables network tools where the harness allows.
-- `--agents a,b` is an alternative to listing targets after the prompt for `fanout`/`race`; `--concurrency N` caps how many run at once.
+- `--agents a,b` is an alternative to listing targets after the prompt for `fanout`/`race`; `--concurrency N` caps how many run at once (`fanout` default: 8, so large target lists queue instead of hitting the `AGENTBRIDGE_MAX_PROCS` cap).
 - `ab handoff` seeds the new session with a summary of the old one; pass `--no-seed` to start it empty.
 - `ab account remove ... --purge` (alias `--delete-dir`) also deletes the account's profile directory.
 - `ab install ... --ceiling <level>` sets the permission ceiling written to the bridge config (default `full`); `--non-interactive`/`--yes` skip prompts.

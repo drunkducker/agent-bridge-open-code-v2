@@ -31,6 +31,9 @@ const entry = (t: FallbackTarget, r: any, e: any, t0: number) => ({
   durationMs: Date.now() - t0,
 });
 
+/** Default fanout width: below the process cap (AGENTBRIDGE_MAX_PROCS) so a large target list queues instead of failing with RATE_LIMITED. */
+export const DEFAULT_FANOUT_CONCURRENCY = 8;
+
 export interface FanoutOptions {
   budget?: Budget | BudgetLimits;
   concurrency?: number;
@@ -46,7 +49,7 @@ export async function fanout(targets: (string | FallbackTarget)[], opts: any, o:
   const ts = targets.map(parseTarget);
   if (!ts.length) throw new TypeError('fanout needs at least one target');
   const shared = o.budget instanceof Budget ? o.budget : new Budget(o.budget || {});
-  const limit = Math.max(1, o.concurrency || ts.length),
+  const limit = Math.max(1, o.concurrency || Math.min(ts.length, DEFAULT_FANOUT_CONCURRENCY)),
     out = new Array(ts.length);
   let next = 0;
   const exec = o.exec || execOne;

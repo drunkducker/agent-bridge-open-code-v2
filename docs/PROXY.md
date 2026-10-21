@@ -243,6 +243,11 @@ Payload-rule keys: `defaults` fills a key only when the request leaves it unset;
   `--agent-root`) the proxy removes sandboxes older than the TTL whose marker pid is dead, then runs `git worktree prune` in the
   recorded repo. Only exact-name directories directly in the temp dir, owned by you and carrying a valid marker are touched;
   anything else (including sandboxes from older versions without a marker) is left alone.
+- `x-ab-sandbox: none`: **in-place mode**. The agent works directly in `x-ab-cwd` (still inside `--agent-root`, token required,
+  permissions capped by the ceiling). There is no worktree/copy, no diff/apply step and no run slot, so `--agent-max-runs` does not
+  apply (only the process cap does). Use it when the caller already isolates its work, e.g. an optimizer (GEPA-style) that gives each
+  evaluation its own folder. Concurrent in-place runs on the *same* folder edit the same files and will conflict; the default
+  sandbox is the safe choice when you want to review before changing anything. The reply carries `x-agentbridge-sandbox: none`.
 - Client `tools` are refused in agent mode (the agent has its own).
 
 ## Tool calling

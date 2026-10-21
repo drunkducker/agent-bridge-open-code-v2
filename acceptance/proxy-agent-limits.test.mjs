@@ -165,3 +165,19 @@ test('stale cleanup prunes the worktree registration in the origin repo', async 
   assert.equal(existsSync(sb.dir), false);
   assert.doesNotMatch(g('worktree', 'list'), /ab-wt-/);
 });
+
+test('x-ab-sandbox: none edits the real folder in place, with no run record', async () => {
+  const { p, root, call, done } = await agentProxy();
+  try {
+    const r = await call('/v1/chat/completions', { model: 'agent/fake/m1', messages: [{ role: 'user', content: 'go' }] }, { 'x-ab-cwd': 'proj', 'x-ab-sandbox': 'none' });
+    assert.equal(r.status, 200);
+    assert.equal(r.headers.get('x-agentbridge-sandbox'), 'none');
+    assert.ok(readdirSync(path.join(root, 'proj')).some((f) => f.startsWith('out-')), 'file written in the real folder');
+    const runs = await (await call('/agent/runs', null, {}, 'GET')).json();
+    assert.equal(runs.runs.length, 0);
+    const bad = await call('/v1/chat/completions', { model: 'agent/fake/m1', messages: [{ role: 'user', content: 'go' }] }, { 'x-ab-cwd': 'proj', 'x-ab-sandbox': 'x' });
+    assert.equal(bad.status, 400);
+  } finally {
+    await done();
+  }
+});

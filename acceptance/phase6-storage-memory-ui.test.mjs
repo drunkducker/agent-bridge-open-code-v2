@@ -252,7 +252,7 @@ test('A41: the agent sweeper is per-store: own timer per store, swept and dispos
     for (const [id, expired] of [['run_expired_1', true], ['run_fresh_1', false]]) {
       store.runs.set(id, {
         id,
-        sandbox: { mode: 'copy', cleanup: () => cleanups.push(id) },
+        sandbox: { mode: 'copy', cleanup: () => cleanups.push(id), cleanupAsync: async () => { cleanups.push(id); } },
         origin: 'x',
         created: Date.now(),
         last: expired ? Date.now() - 2 * 60 * 60 * 1000 : Date.now(),

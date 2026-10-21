@@ -360,7 +360,58 @@ export async function fetchCodexUsage(
   }
 }
 
+const QUOTA_CACHE_TTL_MS = 20_000;
+const quotaCache = new Map<string, { at: number; value?: ProactiveQuotaHealth; pending?: Promise<ProactiveQuotaHealth> }>();
+
+/** Drop cached live quota readings (tests, or after a login change). */
+export function clearQuotaCache(): void {
+  quotaCache.clear();
+}
+
+/**
+ * Quota status with a short cache and single-flight: concurrent callers (a fanout, a proxy under load) share one
+ * live provider request, and a reading is reused for ~20 s. Fixtures, offline/mock mode and
+ * AGENTBRIDGE_QUOTA_CACHE_MS=0 bypass the cache.
+ */
 export async function getProactiveQuotaStatus(
+  agent: string,
+  token?: string,
+  options: QuotaQueryOptions = {}
+): Promise<ProactiveQuotaHealth> {
+  const ttl = Number(process.env.AGENTBRIDGE_QUOTA_CACHE_MS ?? QUOTA_CACHE_TTL_MS);
+  const norm = agent.toLowerCase().trim();
+  if (!(ttl > 0) || options.fixture !== undefined || options.signal || registeredFixtures.size || isMockOrOffline(norm, options)) {
+    return queryProactiveQuotaStatus(agent, token, options);
+  }
+  const key = JSON.stringify([
+    norm,
+    token ? 'tok:' + token.length + ':' + token.slice(-6) : '',
+    options.model ?? '',
+    options.thresholdPercent ?? '',
+    options.profileDir ?? '',
+    options.env?.CLAUDE_CONFIG_DIR ?? '',
+    options.env?.CODEX_HOME ?? '',
+  ]);
+  const hit = quotaCache.get(key);
+  if (hit?.pending) return hit.pending;
+  if (hit?.value && Date.now() - hit.at < ttl) return hit.value;
+  const pending = queryProactiveQuotaStatus(agent, token, options).then(
+    (value) => {
+      // Only cache measured readings; errors/unknowns are retried on the next call.
+      if (value.measured && value.status !== 'error') quotaCache.set(key, { at: Date.now(), value });
+      else quotaCache.delete(key);
+      return value;
+    },
+    (e) => {
+      quotaCache.delete(key);
+      throw e;
+    }
+  );
+  quotaCache.set(key, { at: hit?.at ?? 0, value: hit?.value, pending });
+  return pending;
+}
+
+async function queryProactiveQuotaStatus(
   agent: string,
   token?: string,
   options: QuotaQueryOptions = {}

@@ -6,6 +6,10 @@
 - **`ab doctor` probes every agent:** it now covers every `BUILTIN_AGENTS` entry (adding `cursor`, `grok`, `gemini`, `devin`, `acp`) plus configured endpoints (`ollama` and custom). A missing CLI or an endpoint nothing listens on is `[skip]` (informational), so the exit code is 1 only for real problems: Node < 22, an installed agent whose `--live` call fails, or no usable agent at all (new `agents` check). An installed CLI with no login is a warning and not counted as usable. `--json` keeps its shape; it gains the `skip` status, a top-level `usable` list and `endpoint`/`reachable` fields for endpoints. New machine-independent `acceptance/doctor.test.mjs` (private `PATH`).
 - **Boolean flags:** `--offline`, `--isolated`, `--app-server` and `--delete-dir` no longer swallow the next argument; `ab handoff --no-seed` now takes effect.
 
+### Agent mode and concurrency
+- **In-place agent mode:** `x-ab-sandbox: none` runs the agent directly in `x-ab-cwd` (inside `--agent-root`, token and permission ceiling still enforced), with no sandbox, diff/apply or run cap. For callers that isolate their own work.
+- `fanout` defaults to 8 concurrent workers instead of one per task; `listModels` is single-flight with stale-while-revalidate; live quota readings are cached ~20 s with in-flight sharing (`AGENTBRIDGE_QUOTA_CACHE_MS`, `0` disables).
+
 ### Resource safety
 - Resource bounds: `/api/stats` no longer blocks the event loop (async, bounded opencode exports, 3 s response cache with in-flight coalescing); age+count retention for telemetry sessions, endpoint sessions and read inbox messages (run at startup and daily; `ab sweep` reports per-category counts); Codex app-server daemon pool is LRU-capped and evicts on idle/close/exit; in-process session maps are LRU-bounded; MCP stdio and SSE lines are capped at 16 MB. See docs/TELEMETRY.md.
 - **Concurrent process cap:** `AGENTBRIDGE_MAX_PROCS` (default 24, `0` = unlimited) limits live agent processes per AgentBridge process. Beyond it, spawns fail with `RATE_LIMITED` (HTTP 429 with `retry-after` in the proxy) instead of exhausting RAM.
