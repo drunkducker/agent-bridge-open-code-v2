@@ -32,7 +32,13 @@ Fontes e dados: [comparativo real](2026-10-21_proxy-live-experiment.md), [tarefa
 | Direto recebeu dez deltas de argumentos; caminhos emulados emitiram a chamada reconstruída ao final | A emulação perde a progressividade nativa das ferramentas | Preservar eventos estruturados quando houver suporte |
 | Direto sem ferramentas informou corretamente que não acessava o arquivo | Transporte de modelo não fornece sozinho um ambiente de agente | Manter a execução do harness para tarefas locais completas |
 
-Essas ações são decisões de trabalho; este documento não afirma que já foram implementadas.
+Correções pontuais aplicadas após os experimentos:
+
+- O modo API distingue ferramentas internas do harness das ferramentas fornecidas pelo cliente. Mantém a proibição de acesso local e permite solicitar as ferramentas do cliente. A regressão valida as instruções entregues ao adaptador; ainda não estabelece melhora na escolha automática do modelo por nova inferência real.
+- O app-server normaliza `commandExecution`/`fileChange` e os nomes antigos, incluindo saída e código de término do comando.
+- OpenCode não exige mais `auth.json` como condição para executar: a autenticação fica a cargo do próprio harness/provedor. Antes de resolver variantes ou iniciar o servidor, verifica a versão e recusa v2 ou superior com erro explícito de incompatibilidade, sem sugerir novo login. Isso é uma correção de diagnóstico; **o adaptador de produção ainda não suporta v2**. A migração completa de sessões, permissões, streaming, cancelamento e seleção de mensagens requer trabalho separado; o protótipo experimental não foi promovido.
+
+Há testes de regressão para essas três correções. Os demais itens continuam sendo propostas.
 
 ## Ordem de implementação recomendada
 

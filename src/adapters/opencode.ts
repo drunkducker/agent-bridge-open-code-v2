@@ -33,15 +33,6 @@ function assertInstalled(env: NodeJS.ProcessEnv): void {
   }
 }
 
-function hasAuth(env?: NodeJS.ProcessEnv): boolean {
-  try {
-    const j = JSON.parse(readFileSync(authFile(env), 'utf8'));
-    return j && Object.keys(j).length > 0;
-  } catch {
-    return false;
-  }
-}
-
 // Minimal env allowlist
 const ENV_ALLOW = [
   'PATH',
@@ -403,13 +394,23 @@ const adapter: AgentAdapter & { _run: (o: RunOptions) => AsyncGenerator<AgentEve
   async *_run(o: RunOptions): AsyncGenerator<AgentEvent, RunResult, void> {
     const started = Date.now();
     assertInstalled(o.env || process.env);
-    if (!hasAuth(o.env)) {
-      throw new AgentError('NOT_LOGGED_IN', `No opencode credentials at ${authFile(o.env)} (run \`opencode auth login\`)`, {
-        agent: 'opencode',
-      });
-    }
     if (o.model && !/^[^\s/]+\/[^\s]+$/.test(o.model)) throw bad('model must be "provider/model"');
     if (o.cwd && !existsSync(o.cwd)) throw bad(`cwd does not exist: ${o.cwd}`);
+    // Credentials may come from provider configuration/environment, or be unnecessary for free models.
+    // Let OpenCode authenticate; the presence of a legacy auth.json cannot establish readiness.
+    const version = await runCollect(BIN, ['--version'], {
+      env: minimalEnv(o.env), agent: 'opencode', signal: o.signal,
+      timeoutMs: o.timeoutMs || 10000,
+    });
+    if (version.aborted) throw new AgentError('ABORTED', 'Aborted', { agent: 'opencode' });
+    if (version.timedOut) throw new AgentError('TIMEOUT', 'opencode version check timed out', { agent: 'opencode' });
+    if (version.exitCode !== 0) throw fail('opencode version check failed', { exitCode: version.exitCode });
+    const major = /(?:^|\s)v?(\d+)\.\d+\.\d+/.exec(stripAnsi(version.stdout))?.[1];
+    if (!major) throw fail('Could not determine the installed OpenCode version');
+    if (Number(major) >= 2) {
+      throw bad('OpenCode v2 API is not supported by this adapter yet (it uses the v1 protocol). ' +
+        'Missing auth.json does not imply a missing login; logging in again will not fix this protocol incompatibility.');
+    }
     const variant = o.effort ? await resolveVariant(o.effort, o.model) : undefined;
     const [providerID, ...rest] = (o.model || '').split('/');
     const modelID = rest.join('/');

@@ -290,7 +290,9 @@ export function createLimiter({ maxTokens, stop = [] }: { maxTokens?: number; st
 
 // ---------- prompt building ----------
 const NO_TOOLS =
-  'You are a plain text-completion backend behind an API. Do NOT use any tools, read files, run commands or browse; answer directly from the conversation.';
+  "You are a completion backend behind an API. Do NOT use the harness's own tools to read files, run commands or browse. " +
+  'When client tools are supplied in the system instructions, you may request those tools using the specified format; the client executes them and supplies results in a later turn. ' +
+  'Otherwise answer directly from the conversation without tools. Never invent tool results.';
 
 export function buildPrompt(turns: { role: string; text: string }[], budgetTokens = 0): string {
   const last = turns[turns.length - 1];

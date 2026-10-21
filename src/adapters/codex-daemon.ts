@@ -370,13 +370,13 @@ export class CodexAppServerDaemon {
       this.activeTurn.queue.push(ev.thinking(params?.delta || ''));
     } else if (method === 'item/completed' && params?.item) {
       const it = params.item;
-      if (it.type === 'command_execution') {
+      if (it.type === 'commandExecution' || it.type === 'command_execution') {
         this.activeTurn.queue.push({
-          ...ev.tool('shell', { command: it.command }, it.aggregated_output),
+          ...ev.tool('shell', { command: it.command }, it.aggregatedOutput ?? it.aggregated_output),
           id: it.id,
-          exitCode: it.exit_code,
+          exitCode: it.exitCode ?? it.exit_code,
         } as any);
-      } else if (it.type === 'file_change') {
+      } else if (it.type === 'fileChange' || it.type === 'file_change') {
         this.activeTurn.queue.push({
           ...ev.tool('file_change', { changes: it.changes }, it.status),
           id: it.id,

@@ -75,6 +75,10 @@ test('chat: schemas reach the model; history calls/results are rendered', async 
   assert.equal(j.choices[0].finish_reason, 'stop'); assert.equal(j.choices[0].message.content, 'It is sunny.');
   const o = seen.at(-1);
   assert.match(o.systemPrompt, /<tools>/); assert.match(o.systemPrompt, /get_weather/);
+  assert.doesNotMatch(o.systemPrompt, /Do NOT use any tools/);
+  assert.match(o.systemPrompt, /client.*execut/i);
+  assert.match(o.systemPrompt, /harness.*tools/i);
+  assert.equal(o.permissions, 'read-only');
   assert.match(o.prompt, /<tool_call>.*get_weather/); assert.match(o.prompt, /<tool_result[^>]*>\s*18C/);
 });
 

@@ -12,6 +12,24 @@ import { isInstalled } from '../dist/core/readiness.js';
 const T = 120000;
 const cwd = mkdtempSync(path.join(tmpdir(), 'cx-appserver-'));
 
+test('codex daemon normalizes current and legacy completed tool items', () => {
+  for (const camel of [true, false]) {
+    const daemon = new CodexAppServerDaemon(cwd);
+    const events = [];
+    daemon.activeTurn = { queue: { push: (e) => events.push(e) } };
+    const items = [
+      { id: 'cmd', type: camel ? 'commandExecution' : 'command_execution', command: 'cat marker.txt',
+        ...(camel ? { aggregatedOutput: 'marker', exitCode: 0 } : { aggregated_output: 'marker', exit_code: 0 }) },
+      { id: 'file', type: camel ? 'fileChange' : 'file_change', changes: [{ path: 'marker.txt', kind: 'add' }], status: 'completed' },
+    ];
+    for (const item of items) daemon.handleServerNotification('item/completed', { item }, { item });
+    assert.deepEqual(events.filter((e) => e.type === 'tool'), [
+      { type: 'tool', name: 'shell', input: { command: 'cat marker.txt' }, output: 'marker', id: 'cmd', exitCode: 0 },
+      { type: 'tool', name: 'file_change', input: { changes: items[1].changes }, output: 'completed', id: 'file' },
+    ]);
+  }
+});
+
 test('validateOptions accepts transport and appServer options', () => {
   const o1 = validateOptions({ prompt: 'test', transport: 'app-server' });
   assert.equal(o1.transport, 'app-server');
