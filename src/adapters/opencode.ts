@@ -10,6 +10,7 @@ import { hintFor } from '../core/hints.js';
 import { spawnProc, runCollect, resolveBinary, killTree, ProcessHandle } from '../core/spawn.js';
 import { extractJson, schemaSuffix, validate } from '../extras/schema.js';
 import { AgentAdapter, AgentEvent, RunOptions, RunResult, Usage } from '../types/index.js';
+import { LruMap } from '../core/lru.js';
 
 const BIN = 'opencode';
 const bad = (m: string) => new AgentError('BAD_OPTION', m, { agent: 'opencode' });
@@ -161,7 +162,7 @@ export function makeRedactor(): Redactor {
 }
 
 // Sessions started by this process: id -> { cwd, seq }
-const owned = new Map<string, { cwd: string; seq: number }>();
+const owned = new LruMap<string, { cwd: string; seq: number }>(1000);
 let seq = 0;
 const norm = (d: string) => {
   try {

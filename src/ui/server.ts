@@ -3,8 +3,9 @@ import http from 'node:http';
 import path from 'node:path';
 import { readFileSync } from 'node:fs';
 import { timingSafeEqual } from 'node:crypto';
-import { stats, loadTrackedRun } from '../telemetry/stats.js';
-import { loadRun } from '../bridge/runs.js';
+import { statsAsync, loadTrackedRun } from '../telemetry/stats.js';
+import { loadRun, scheduleRetention } from '../bridge/runs.js';
+import { LruMap } from '../core/lru.js';
 import { listCheckpoints, diffCheckpoint, rollbackCheckpoint } from '../extras/checkpoint.js';
 
 const LOOPBACK = new Set(['127.0.0.1', '::1', 'localhost']);
@@ -159,6 +160,11 @@ export async function startUi(o: StartUiOptions = {}): Promise<UiServerResult> {
     );
   }
   let port = o.port ?? 8788;
+  scheduleRetention(env, { full: false });
+  // /api/stats: ~3 s response cache + in-flight coalescing so concurrent pollers share one computation
+  const STATS_TTL_MS = Number(env.AGENTBRIDGE_UI_STATS_TTL_MS ?? 3000);
+  const statsCache = new LruMap<number, { at: number; body: any }>(16);
+  const statsInflight = new Map<number, Promise<any>>();
   const hostOk = (h?: string) => {
     if (o.allowNonLoopback) return true;
     const m = /^(\[::1\]|[^:]+)(?::(\d+))?$/.exec(h || '');
@@ -219,14 +225,24 @@ export async function startUi(o: StartUiOptions = {}): Promise<UiServerResult> {
           30 * 24 * 3600_000,
           Math.max(60_000, Number(u.searchParams.get('since')) || 24 * 3600_000)
         );
-        const now = Date.now();
-        const s = stats({ env, persist: false, sinceMs, runLimit: 5000, now });
-        return json(res, 200, {
-          ...s,
-          runs: s.runs.slice(0, 300),
-          summary: summarize(s.runs, { now, sinceMs }),
-          version: 1,
-        });
+        const hit = statsCache.get(sinceMs);
+        if (hit && Date.now() - hit.at < STATS_TTL_MS) return json(res, 200, hit.body);
+        let inflight = statsInflight.get(sinceMs);
+        if (!inflight) {
+          inflight = (async () => {
+            const now = Date.now();
+            const s = await statsAsync({ env, persist: false, sinceMs, runLimit: 5000, now });
+            const body = { ...s, runs: s.runs.slice(0, 300), summary: summarize(s.runs, { now, sinceMs }), version: 1 };
+            statsCache.set(sinceMs, { at: Date.now(), body });
+            return body;
+          })().finally(() => statsInflight.delete(sinceMs));
+          statsInflight.set(sinceMs, inflight);
+        }
+        inflight.then(
+          (body) => json(res, 200, body),
+          (e: any) => json(res, 500, { error: String(e?.message || e) })
+        );
+        return;
       }
       let m: RegExpExecArray | null;
       if ((m = /^\/api\/run\/([\w-]{1,64})$/.exec(p))) {

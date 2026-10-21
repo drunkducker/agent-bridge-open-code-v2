@@ -3,6 +3,7 @@ import { mkdirSync, writeFileSync, readFileSync, readdirSync, renameSync, unlink
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { randomUUID, createHash } from 'node:crypto';
+import { pruneDir, envNum, type PruneResult } from '../core/retention.js';
 
 export interface RunEventItem {
   t: number;
@@ -170,13 +171,61 @@ export function listRuns(env: NodeJS.ProcessEnv = process.env): RunRecord[] {
   return (names.map((n) => loadRun(n.slice(0, -5), env)).filter(Boolean) as RunRecord[]).sort((a, b) => b.startedAt - a.startedAt);
 }
 
+export interface StoreSweep {
+  sessions: PruneResult;
+  endpointSessions: PruneResult;
+  inbox: PruneResult;
+}
+
+/** Age+count pruning of telemetry sessions, endpoint sessions and consumed inbox messages (env-tunable, never throws). */
+export function pruneStores(env: NodeJS.ProcessEnv = process.env, now = Date.now()): StoreSweep {
+  const day = 864e5;
+  const json = (n: string) => n.endsWith('.json');
+  const sessions = pruneDir(path.join(home(env), 'telemetry', 'sessions'), {
+    match: json,
+    maxAgeMs: envNum(env, 'AGENTBRIDGE_SESSION_MAX_AGE_MS', 30 * day),
+    maxCount: envNum(env, 'AGENTBRIDGE_SESSION_MAX_COUNT', 500),
+    now,
+  });
+  const endpointSessions = pruneDir(path.join(home(env), 'endpoint-sessions'), {
+    match: json,
+    maxAgeMs: envNum(env, 'AGENTBRIDGE_ENDPOINT_SESSION_MAX_AGE_MS', 30 * day),
+    maxCount: envNum(env, 'AGENTBRIDGE_ENDPOINT_SESSION_MAX_COUNT', 500),
+    now,
+  });
+  const inbox: PruneResult = { total: 0, removed: 0 };
+  const inboxRoot = path.join(home(env), 'inbox');
+  const readAge = envNum(env, 'AGENTBRIDGE_INBOX_READ_MAX_AGE_MS', day);
+  try {
+    for (const d of readdirSync(inboxRoot)) {
+      const r = pruneDir(path.join(inboxRoot, d), { match: (n) => n.endsWith('.read'), maxAgeMs: readAge, maxCount: Infinity, now });
+      inbox.total += r.total;
+      inbox.removed += r.removed;
+    }
+  } catch { /* none */ }
+  return { sessions, endpointSessions, inbox };
+}
+
+let retentionTimer: NodeJS.Timeout | undefined;
+/**
+ * Once per process: optionally prune stores shortly after start (delayMs >= 0), and always arm the unref'd daily sweep.
+ * `full` makes the startup pass a run-record sweep too; otherwise it only prunes the stores.
+ */
+export function scheduleRetention(env: NodeJS.ProcessEnv = process.env, { full = false, delayMs = 1500 }: { full?: boolean; delayMs?: number } = {}): void {
+  if (retentionTimer) return;
+  const safe = (fn: () => unknown) => () => { try { fn(); } catch { /* ignore */ } };
+  if (delayMs >= 0) setTimeout(safe(() => (full ? sweep(env) : pruneStores(env))), delayMs).unref?.();
+  retentionTimer = setInterval(safe(() => sweep(env)), Number(env.AGENTBRIDGE_RETENTION_INTERVAL_MS) || 864e5);
+  retentionTimer.unref?.();
+}
+
 export interface SweepOptions {
   maxAgeMs?: number;
   maxCount?: number;
 }
 
 /** Startup sweep: persist 'lost' for dead owners, GC old/excess terminal runs (unless retained), drop stale idempotency locks. */
-export function sweep(env: NodeJS.ProcessEnv = process.env, { maxAgeMs = Number(env.AGENTBRIDGE_RUN_MAX_AGE_MS) || 7 * 864e5, maxCount = Number(env.AGENTBRIDGE_RUN_MAX_COUNT) || 500 }: SweepOptions = {}): { total: number; removed: number } {
+export function sweep(env: NodeJS.ProcessEnv = process.env, { maxAgeMs = Number(env.AGENTBRIDGE_RUN_MAX_AGE_MS) || 7 * 864e5, maxCount = Number(env.AGENTBRIDGE_RUN_MAX_COUNT) || 500 }: SweepOptions = {}): { total: number; removed: number } & StoreSweep & { runs: PruneResult } {
   const all = listRuns(env);
   let removed = 0;
   const gone = new Set<string>();
@@ -199,7 +248,8 @@ export function sweep(env: NodeJS.ProcessEnv = process.env, { maxAgeMs = Number(
       } catch { /* ignore */ }
     }
   } catch { /* none */ }
-  return { total: all.length, removed };
+  scheduleRetention(env, { delayMs: -1 });
+  return { total: all.length, removed, runs: { total: all.length, removed }, ...pruneStores(env) };
 }
 
 /**

@@ -64,6 +64,18 @@ Provider quota readers and their authentication requirements are documented in [
 ## Known limits
 Tool counts need the wrapper. opencode context has no session-file reader. Codex fork/`exec resume` behavior depends on the installed CLI version.
 
+## Retention and resource bounds
+Pruned by mtime at bridge/proxy/dashboard startup and then daily (unref'd timer); `ab sweep` runs it on demand and prints per-category `{total, removed}` (`runs`, `sessions`, `endpointSessions`, `inbox`) next to the legacy top-level `total`/`removed`.
+
+| Store | Default | Env override |
+| --- | --- | --- |
+| Bridge run records | 7 days / 500 | `AGENTBRIDGE_RUN_MAX_AGE_MS`, `AGENTBRIDGE_RUN_MAX_COUNT` |
+| `telemetry/sessions/*.json` | 30 days / 500 | `AGENTBRIDGE_SESSION_MAX_AGE_MS`, `AGENTBRIDGE_SESSION_MAX_COUNT` |
+| `endpoint-sessions/*.json` | 30 days / 500 | `AGENTBRIDGE_ENDPOINT_SESSION_MAX_AGE_MS`, `AGENTBRIDGE_ENDPOINT_SESSION_MAX_COUNT` |
+| `inbox/*/*.read` (unread `.msg` is never pruned) | 1 day | `AGENTBRIDGE_INBOX_READ_MAX_AGE_MS` |
+
+Other knobs: `AGENTBRIDGE_RETENTION_INTERVAL_MS` (daily timer), `AGENTBRIDGE_CODEX_DAEMON_MAX` (Codex app-server daemons kept, default 4; least recently used idle one is closed), `AGENTBRIDGE_MCP_MAX_LINE_BYTES` (MCP stdio line cap, default 16 MB; SSE events are capped at 16 MB too), `AGENTBRIDGE_OPENCODE_CTX_TTL_MS` (opencode context cache, default 120 s), `AGENTBRIDGE_OPENCODE_EXPORT_CONCURRENCY` (default 3), `AGENTBRIDGE_UI_MAX_EXPORTS` (opencode sessions exported per dashboard poll, default 30), `AGENTBRIDGE_UI_STATS_TTL_MS` (`/api/stats` response cache, default 3000).
+
 ## Dashboard
 `ab ui [--port 8788] [--open] [--token t] [--host 127.0.0.1] [--allow-non-loopback]` starts a small web server (default http://127.0.0.1:8788) that shows the telemetry described above. It reads the same files as `ab stats` (`runLimit` is raised to 5000 runs) and refreshes every 1.5 s while something runs, 3 s otherwise; it pauses in background tabs.
 

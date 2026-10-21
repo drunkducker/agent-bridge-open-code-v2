@@ -16,8 +16,9 @@ import {
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { home, listRuns } from '../bridge/runs.js';
-import { resolveBinary } from '../core/spawn.js';
+import { home, listRuns, scheduleRetention } from '../bridge/runs.js';
+import { resolveBinary, runCollect } from '../core/spawn.js';
+import { LruMap } from '../core/lru.js';
 
 export const telemetryDir = (env: NodeJS.ProcessEnv = process.env): string => path.join(home(env), 'telemetry');
 const sub = (env: NodeJS.ProcessEnv, n: string): string => path.join(telemetryDir(env), n);
@@ -163,15 +164,22 @@ export interface SessionContextResult {
   file?: string;
 }
 
-const sessionContextCache = new Map<string, { result: SessionContextResult | null; cachedAt: number }>();
+const sessionContextCache = new LruMap<string, { result: SessionContextResult | null; cachedAt: number }>(1000);
 const CACHE_TTL_MS = 30_000;
+// opencode needs a subprocess per read: keep its results longer
+const OPENCODE_CACHE_TTL_MS = Number(process.env.AGENTBRIDGE_OPENCODE_CTX_TTL_MS) || 120_000;
+const ttlFor = (agent: string): number => (agent === 'opencode' ? OPENCODE_CACHE_TTL_MS : CACHE_TTL_MS);
 
-export function readSessionContext(
-  agent: string,
-  sessionId: string,
-  { homeDir = homedir(), cwd, env, refresh = false }: { homeDir?: string; cwd?: string; env?: NodeJS.ProcessEnv; refresh?: boolean } = {}
-): SessionContextResult | null {
-  if (!sessionId) return null;
+interface ContextOpts {
+  homeDir?: string;
+  cwd?: string;
+  env?: NodeJS.ProcessEnv;
+  refresh?: boolean;
+  /** Never spawn: serve cached values (even stale) for agents that need a subprocess (opencode), else null. */
+  cacheOnly?: boolean;
+}
+
+function ctxCacheKey(agent: string, sessionId: string, { homeDir = homedir(), cwd, env }: ContextOpts): string {
   const normalizeProfilePath = (p: string | undefined): string => {
     if (!p) return '';
     const resolved = path.resolve(p);
@@ -197,10 +205,93 @@ export function readSessionContext(
       normalizeProfilePath(binary || undefined),
     ];
   }
-  const cacheKey = JSON.stringify([agent, sessionId, profileIdentity]);
-  const hit = sessionContextCache.get(cacheKey);
-  if (!refresh && hit && Date.now() - hit.cachedAt < CACHE_TTL_MS) {
-    return hit.result;
+  return JSON.stringify([agent, sessionId, profileIdentity]);
+}
+
+function cacheGet(key: string, agent: string, allowStale = false): { hit: boolean; result: SessionContextResult | null } {
+  const e = sessionContextCache.get(key);
+  if (!e) return { hit: false, result: null };
+  if (allowStale || Date.now() - e.cachedAt < ttlFor(agent)) return { hit: true, result: e.result };
+  sessionContextCache.delete(key); // enforce TTL by eviction
+  return { hit: false, result: null };
+}
+
+function parseOpencodeExport(stdout: string): SessionContextResult | null {
+  const i = (stdout || '').indexOf('{');
+  if (i < 0) return null;
+  const j = JSON.parse(stdout.slice(i));
+  const msgs = (j.messages || []).filter((m: any) => m.info?.role === 'assistant' && m.info.tokens);
+  const last = msgs[msgs.length - 1];
+  if (!last) return null;
+  const t = last.info.tokens;
+  return {
+    tokens: (t.input || 0) + (t.output || 0) + (t.cache?.read || 0) + (t.cache?.write || 0),
+    exact: true,
+    source: 'opencode-export',
+    model: last.info.modelID ? `${last.info.providerID ? last.info.providerID + '/' : ''}${last.info.modelID}` : undefined,
+  };
+}
+
+// Async opencode export: bounded concurrency + in-flight coalescing so a dashboard poll can never stall the loop.
+const EXPORT_CONCURRENCY = Number(process.env.AGENTBRIDGE_OPENCODE_EXPORT_CONCURRENCY) || 3;
+let exportActive = 0;
+const exportWaiters: (() => void)[] = [];
+const exportInflight = new Map<string, Promise<SessionContextResult | null>>();
+async function withExportSlot<T>(fn: () => Promise<T>): Promise<T> {
+  if (exportActive >= EXPORT_CONCURRENCY) await new Promise<void>((ok) => exportWaiters.push(ok));
+  exportActive++;
+  try {
+    return await fn();
+  } finally {
+    exportActive--;
+    exportWaiters.shift()?.();
+  }
+}
+
+/** Async variant of readSessionContext: identical results, but opencode exports run off the event loop. */
+export async function readSessionContextAsync(agent: string, sessionId: string, o: ContextOpts = {}): Promise<SessionContextResult | null> {
+  if (!sessionId) return null;
+  if (agent !== 'opencode') return readSessionContext(agent, sessionId, o);
+  const key = ctxCacheKey(agent, sessionId, o);
+  if (!o.refresh) {
+    const c = cacheGet(key, agent, !!o.cacheOnly);
+    if (c.hit) return c.result;
+  }
+  if (o.cacheOnly) return null;
+  const pending = exportInflight.get(key);
+  if (pending) return pending;
+  const p = withExportSlot(async () => {
+    const env = o.env;
+    const bin = resolveBinary('opencode', env || process.env);
+    let res: SessionContextResult | null = null;
+    if (bin) {
+      try {
+        const r = await runCollect(bin, ['export', sessionId], { cwd: o.cwd || undefined, env: env as any, timeoutMs: 3_000, maxLine: 32 * 1024 * 1024 });
+        if (r.exitCode === 0) res = parseOpencodeExport(r.stdout);
+      } catch {
+        /* fall through */
+      }
+    }
+    if (res) sessionContextCache.set(key, { result: res, cachedAt: Date.now() });
+    else sessionContextCache.delete(key);
+    return res;
+  }).finally(() => exportInflight.delete(key));
+  exportInflight.set(key, p);
+  return p;
+}
+
+export function readSessionContext(
+  agent: string,
+  sessionId: string,
+  o: ContextOpts = {}
+): SessionContextResult | null {
+  const { homeDir = homedir(), cwd, env, refresh = false, cacheOnly = false } = o;
+  if (!sessionId) return null;
+  const cacheKey = ctxCacheKey(agent, sessionId, o);
+  if (agent === 'opencode' && cacheOnly) return cacheGet(cacheKey, agent, true).result;
+  if (!refresh) {
+    const c = cacheGet(cacheKey, agent);
+    if (c.hit) return c.result;
   }
   const miss = () => {
     sessionContextCache.delete(cacheKey);
@@ -258,21 +349,7 @@ export function readSessionContext(
         windowsHide: true,
         maxBuffer: 32 * 1024 * 1024,
       });
-      const i = (r.stdout || '').indexOf('{');
-      if (r.status === 0 && i >= 0) {
-        const j = JSON.parse(r.stdout.slice(i));
-        const msgs = (j.messages || []).filter((m: any) => m.info?.role === 'assistant' && m.info.tokens);
-        const last = msgs[msgs.length - 1];
-        if (last) {
-          const t = last.info.tokens;
-          res = {
-            tokens: (t.input || 0) + (t.output || 0) + (t.cache?.read || 0) + (t.cache?.write || 0),
-            exact: true,
-            source: 'opencode-export',
-            model: last.info.modelID ? `${last.info.providerID ? last.info.providerID + '/' : ''}${last.info.modelID}` : undefined,
-          };
-        }
-      }
+      if (r.status === 0) res = parseOpencodeExport(r.stdout || '');
     } else if (agent === 'codex') {
       const codexDir = env?.CODEX_HOME || path.join(homeDir, '.codex');
       const f = findFile(path.join(codexDir, 'sessions'), (n) => n.startsWith('rollout-') && n.endsWith(`${sessionId}.jsonl`));
@@ -331,6 +408,32 @@ export function readSessionContext(
   return res;
 }
 
+/**
+ * stats() without event-loop stalls: opencode context exports run async (bounded concurrency, capped per poll,
+ * bounded wait) and stats() then reads only the cache. Slow exports finish in the background for the next poll.
+ */
+export async function statsAsync(
+  o: Parameters<typeof stats>[0] & { maxExports?: number; exportBudgetMs?: number } = {}
+): Promise<any> {
+  const env = o.env || process.env;
+  const now = o.now ?? Date.now();
+  const sinceMs = o.sinceMs ?? 24 * 3600_000;
+  const maxExports = o.maxExports ?? (Number(env.AGENTBRIDGE_UI_MAX_EXPORTS) || 30);
+  const budget = o.exportBudgetMs ?? 2_000;
+  const targets = listSessions(env, { limit: 1000 })
+    .filter((x) => x.agent === 'opencode' && x.sessionId && now - (x.lastAt || 0) <= sinceMs)
+    .sort((a, b) => (b.lastAt || 0) - (a.lastAt || 0))
+    .slice(0, maxExports);
+  if (targets.length) {
+    const all = Promise.allSettled(targets.map((x) => readSessionContextAsync('opencode', x.sessionId, { homeDir: o.homeDir, cwd: x.cwd, env })));
+    let timer: NodeJS.Timeout | undefined;
+    await Promise.race([all, new Promise<void>((ok) => (timer = setTimeout(ok, budget)))]);
+    if (timer) clearTimeout(timer);
+  }
+  await new Promise<void>((ok) => setImmediate(ok));
+  return stats({ ...o, cacheOnly: true });
+}
+
 export function runStatus(rec: any, { now = Date.now(), idleMs = 30_000, isAlive = alive }: { now?: number; idleMs?: number; isAlive?: (pid: number) => boolean } = {}): string {
   const st = rec.state;
   if (st === 'running') {
@@ -350,6 +453,7 @@ export function sessionStatus(runStatuses: string[]): 'active' | 'idle' | 'finis
 const FILE_KEYS = ['file_path', 'filePath', 'path', 'notebook_path'];
 
 export function createTracker({ agent, opts, env = process.env, origin = 'tracker' }: { agent: string; opts: any; env?: NodeJS.ProcessEnv; origin?: string }) {
+  scheduleRetention(env);
   const now = Date.now();
   const rec: any = {
     id: randomUUID().slice(0, 12),
@@ -482,10 +586,17 @@ export function createTracker({ agent, opts, env = process.env, origin = 'tracke
       }
       save(true);
       if (rec.sessionId && rec.sessionMode !== 'ephemeral') {
+        const eff = rec.effectiveAgent || rec.fallback?.used || rec.agent;
+        const slow = eff === 'opencode'; // its context read is a subprocess: never block the caller's event loop on it
         try {
-          foldIntoSession(rec, env);
+          foldIntoSession(rec, env, slow);
         } catch {
           /* ignore */
+        }
+        if (slow) {
+          readSessionContextAsync(eff, rec.sessionId, { env, cwd: rec.cwd, refresh: true })
+            .then(() => foldIntoSession(rec, env, true))
+            .catch(() => {});
         }
       }
       return rec;
@@ -532,13 +643,13 @@ function withLock<T>(lockPath: string, fn: () => T): T {
   }
 }
 
-function foldIntoSession(run: any, env: NodeJS.ProcessEnv): any {
+function foldIntoSession(run: any, env: NodeJS.ProcessEnv, cacheOnly = false): any {
   const effectiveAgent = run.effectiveAgent || run.fallback?.used || run.agent;
   const f = sessionFile(env, effectiveAgent, run.sessionId);
-  return withLock(`${f}.lock`, () => foldLocked(run, env, f));
+  return withLock(`${f}.lock`, () => foldLocked(run, env, f, cacheOnly));
 }
 
-function foldLocked(run: any, env: NodeJS.ProcessEnv, f: string): void {
+function foldLocked(run: any, env: NodeJS.ProcessEnv, f: string, cacheOnly = false): void {
   const effectiveAgent = run.effectiveAgent || run.fallback?.used || run.agent;
   const s = readJson(f) || {
     agent: effectiveAgent,
@@ -573,12 +684,12 @@ function foldLocked(run: any, env: NodeJS.ProcessEnv, f: string): void {
     s.lastPrompt = run.promptHead;
   }
   s.lastRun = { id: run.id, state: run.state };
-  s.ctx = computeCtx(effectiveAgent, run.sessionId, run, s, env);
+  s.ctx = computeCtx(effectiveAgent, run.sessionId, run, s, env, undefined, cacheOnly, run.cwd);
   writeJson(f, s);
 }
 
-function computeCtx(agent: string, sessionId: string, run: any, s: any, env: NodeJS.ProcessEnv, homeDir?: string): any {
-  const file = readSessionContext(agent, sessionId, { homeDir, env, refresh: true });
+function computeCtx(agent: string, sessionId: string, run: any, s: any, env: NodeJS.ProcessEnv, homeDir?: string, cacheOnly = false, cwd?: string): any {
+  const file = readSessionContext(agent, sessionId, { homeDir, env, cwd, refresh: !cacheOnly, cacheOnly });
   if (file) return { tokens: file.tokens, exact: file.exact, source: file.source, window: file.window || null, at: Date.now() };
   if (run?.lastUsage) {
     const u = run.lastUsage,
@@ -635,10 +746,10 @@ export function loadTrackedRun(id: string, env: NodeJS.ProcessEnv = process.env)
   return readJson(runFile(env, id));
 }
 
-function ctxView(s: any, { env, homeDir, windows, refresh = false }: { env: NodeJS.ProcessEnv; homeDir?: string; windows?: any; refresh?: boolean }): any {
+function ctxView(s: any, { env, homeDir, windows, refresh = false, cacheOnly = false }: { env: NodeJS.ProcessEnv; homeDir?: string; windows?: any; refresh?: boolean; cacheOnly?: boolean }): any {
   let ctx = s.ctx;
   let realModel: string | null = null;
-  const f = readSessionContext(s.agent, s.sessionId, { homeDir, cwd: s.cwd, env, refresh });
+  const f = readSessionContext(s.agent, s.sessionId, { homeDir, cwd: s.cwd, env, refresh, cacheOnly });
   if (f) {
     realModel = f.model || null;
     ctx = { tokens: f.tokens, exact: f.exact, source: f.source, window: f.window || null, at: Date.now() };
@@ -709,6 +820,7 @@ export function stats({
   persist = true,
   now = Date.now(),
   runLimit = 200,
+  cacheOnly = false,
 }: {
   env?: NodeJS.ProcessEnv;
   homeDir?: string;
@@ -718,6 +830,8 @@ export function stats({
   persist?: boolean;
   now?: number;
   runLimit?: number;
+  /** Never spawn subprocesses for session context (opencode): use cached/stored values only. */
+  cacheOnly?: boolean;
 } = {}): any {
   const cfg = { ...(loadConfig(env).windows || {}), ...(windows || {}) };
   const tracked = listTrackedRuns(env);
@@ -800,7 +914,7 @@ export function stats({
   const sessions = [...bySession.values()]
     .filter((s) => now - (s.lastAt || 0) <= sinceMs || runs.some((r) => r.sessionId === s.sessionId && (r.status === 'active' || r.status === 'idle')))
     .map((s) => {
-      const c = ctxView(s, { env, homeDir, windows: cfg });
+      const c = ctxView(s, { env, homeDir, windows: cfg, cacheOnly });
       const mine = runs.filter((r) => r.sessionId === s.sessionId && r.agent === s.agent);
       const status = sessionStatus(mine.map((r) => r.status));
       return {

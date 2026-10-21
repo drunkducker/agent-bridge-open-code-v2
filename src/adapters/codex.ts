@@ -7,6 +7,7 @@ import { AgentError } from '../core/errors.js';
 import { ev, parseJsonLine } from '../core/events.js';
 import { validateOptions } from '../index.js';
 import { AgentAdapter, AgentEvent, RunResult } from '../types/index.js';
+import { LruMap } from '../core/lru.js';
 import { codexDaemonPool } from './codex-daemon.js';
 
 export { codexDaemonPool };
@@ -77,7 +78,7 @@ function rolloutExists(id: string, env?: NodeJS.ProcessEnv): boolean {
   return found;
 }
 
-const OWN = new Map<string, string>();
+const OWN = new LruMap<string, string>(1000);
 
 function newestRollout(cwd: string, adoptForeign: boolean, scope = '', env?: NodeJS.ProcessEnv): string | undefined {
   const root = path.join(codexHome(env), 'sessions');

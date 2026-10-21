@@ -7,6 +7,7 @@ import { ev, parseJsonLine } from '../core/events.js';
 import { validateOptions } from '../index.js';
 import { hintFor } from '../core/hints.js';
 import { AgentAdapter, AgentEvent, RunResult } from '../types/index.js';
+import { LruMap } from '../core/lru.js';
 
 const READ_TOOLS = 'Read,Glob,Grep,WebFetch,WebSearch';
 const OFFLINE_READ_TOOLS = 'Read,Glob,Grep';
@@ -14,7 +15,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 const AUTH_RE =
   /not logged in|please run \/login|invalid (x-)?api key|authentication_error|invalid authentication|oauth token (has )?(expired|revoked)|failed to authenticate/i;
-const ours = new Map<string, string[]>(); // normCwd(resolved cwd) -> ordered session ids started/used by THIS process
+const ours = new LruMap<string, string[]>(1000); // normCwd(resolved cwd) -> ordered session ids started/used by THIS process
 const busy = new Map<string, number>(); // session id -> number of in-flight continue runs
 const locks = new Map<string, Promise<void>>(); // session id -> promise tail
 // NTFS/Windows paths are case-insensitive: resolve then fold case (win32 only) so map keys match

@@ -129,6 +129,10 @@ export class CodexAppServerDaemon {
   private initPromise?: Promise<void>;
   private idleTimer?: NodeJS.Timeout;
   private turnQueue: Promise<void> = Promise.resolve();
+  /** Turns started on this daemon that have not finished (queued or running); eviction skips daemons with any. */
+  public pendingTurns = 0;
+  /** Set by the pool: drop this daemon from the pool when it closes or its process exits. */
+  public onGone?: () => void;
 
   constructor(cwd: string, envExtra?: Record<string, string>) {
     this.cwd = path.resolve(cwd || process.cwd());
@@ -290,6 +294,7 @@ export class CodexAppServerDaemon {
       }
     } finally {
       this.isAlive = false;
+      this.onGone?.();
       for (const req of this.pendingRequests.values()) {
         req.reject(new AgentError('AGENT_FAILED', 'Codex app-server exited unexpectedly'));
       }
@@ -464,6 +469,7 @@ export class CodexAppServerDaemon {
     let acquired = false;
     let ownTurnCtx: ActiveTurnContext | undefined;
     let abortListener: (() => void) | undefined;
+    this.pendingTurns++;
     try {
       throwIfAborted();
       await awaitWithSignal(waitPrevious, signal, 'Codex turn aborted while queued');
@@ -605,6 +611,7 @@ export class CodexAppServerDaemon {
       if (timeoutTimer) clearTimeout(timeoutTimer);
       o.signal?.removeEventListener('abort', relayCallerAbort);
       releaseLock();
+      this.pendingTurns--;
       if (acquired) {
         if (this.activeTurn === ownTurnCtx) this.activeTurn = undefined;
         this.refreshIdleTimer();
@@ -614,6 +621,7 @@ export class CodexAppServerDaemon {
 
   close() {
     this.isAlive = false;
+    this.onGone?.();
     if (this.idleTimer) clearTimeout(this.idleTimer);
     if (this.p) {
       try {
@@ -643,25 +651,54 @@ function getDaemonPoolKey(cwd: string, env?: Record<string, string>): string {
   return JSON.stringify([cwdKey, codexHomeKey, acct, endpoint, codexEndpoint, credentialFingerprint]);
 }
 
-/** Global Daemon Pool indexed by resolved workspace path and effective account environment */
-class DaemonPool {
-  private daemons = new Map<string, CodexAppServerDaemon>();
+/** Global Daemon Pool indexed by resolved workspace path and effective account environment (LRU-capped). */
+export class DaemonPool {
+  private daemons = new Map<string, CodexAppServerDaemon>(); // insertion order == recency (oldest first)
+
+  constructor(private maxSize: number = Number(process.env.AGENTBRIDGE_CODEX_DAEMON_MAX) || 4) {}
+
+  get size(): number {
+    return this.daemons.size;
+  }
+
+  setMax(n: number): void {
+    this.maxSize = Math.max(1, n);
+  }
 
   get(cwd: string, env?: Record<string, string>): CodexAppServerDaemon {
     const key = getDaemonPoolKey(cwd, env);
     let daemon = this.daemons.get(key);
-    if (!daemon || (daemon.spawned && !daemon.alive)) {
-      daemon = new CodexAppServerDaemon(cwd, env);
-      this.daemons.set(key, daemon);
+    if (daemon && daemon.spawned && !daemon.alive) {
+      this.daemons.delete(key);
+      daemon = undefined;
     }
-    return daemon;
+    if (daemon) {
+      this.daemons.delete(key); // refresh recency
+      this.daemons.set(key, daemon);
+      return daemon;
+    }
+    const fresh = new CodexAppServerDaemon(cwd, env);
+    fresh.onGone = () => {
+      if (this.daemons.get(key) === fresh) this.daemons.delete(key);
+    };
+    this.daemons.set(key, fresh);
+    this.evict(fresh);
+    return fresh;
+  }
+
+  private evict(keep: CodexAppServerDaemon): void {
+    for (const [k, d] of [...this.daemons]) {
+      if (this.daemons.size <= this.maxSize) break;
+      if (d === keep || d.activeTurn || d.pendingTurns > 0) continue; // never kill a busy daemon
+      this.daemons.delete(k);
+      d.close();
+    }
   }
 
   shutdownAll() {
-    for (const daemon of this.daemons.values()) {
-      daemon.close();
-    }
+    const all = [...this.daemons.values()];
     this.daemons.clear();
+    for (const daemon of all) daemon.close();
   }
 }
 
