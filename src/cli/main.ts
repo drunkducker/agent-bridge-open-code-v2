@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// agentbridge CLI (`ab` / `agentbridge`). Plain Node ESM, zero deps.
+// agentbridge CLI (`ab` / `agentbridge`). TypeScript compiled to dist/ (Node ESM), zero runtime dependencies.
 import { fileURLToPath } from 'node:url';
 import { realpathSync, readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -456,7 +456,7 @@ async function cmdHandoff(_: string[], flags: Record<string, any>) {
   const sid = _[0];
   if (!sid || !flags.to) throw new UsageError('usage: ab handoff <session> --to <agent> [--agent source-agent]');
   checkAgent(flags.to);
-  const h: any = await handoff(sid, flags.to, { agent: flags.agent, cwd: flags.cwd, seed: flags.seed !== false });
+  const h: any = await handoff(sid, flags.to, { agent: flags.agent, cwd: flags.cwd, seed: flags.seed !== false && !flags['no-seed'] });
   out(
     flags.json
       ? h
@@ -480,7 +480,7 @@ async function cmdDoctor(_: string[], flags: Record<string, any>) {
     if (!d.ok) process.exitCode = 1;
     return;
   }
-  for (const c of d.checks) out(`[${c.status === 'ok' ? ' ok ' : c.status === 'warn' ? 'WARN' : 'FAIL'}] ${c.name}: ${c.detail}`);
+  for (const c of d.checks) out(`[${c.status === 'ok' ? ' ok ' : c.status === 'warn' ? 'WARN' : c.status === 'skip' ? 'skip' : 'FAIL'}] ${c.name}: ${c.detail}`);
   if (!d.ok) process.exitCode = 1;
 }
 
@@ -623,7 +623,7 @@ const HELP = `agentbridge (ab) — drive local claude/codex/opencode/agy/pi/curs
   ab serve [--port][--host][--token][--allow-non-loopback][--fallback a,b:model][--min-remaining-percent N][--wait-for-quota][--max-quota-wait seconds][--config file.json][--agent-root DIR][--agent-max-permission edit|full][--accounts file.json --accept-tos-risk][--log file.jsonl]
   ab ui [--port 8788][--open][--token t]            # live dashboard: runs, tokens, context, checkpoints, fallbacks
   ab bridge                                        # stdio MCP server
-  ab doctor [--live][--json]
+  ab doctor [--live][--json][--no-models][--port N]   # missing CLIs are [skip]; exit 1 only on real problems or if no agent is usable
   ab setup | ab wizard [--yes]                     # modern interactive terminal setup wizard
   ab install <claude|codex|opencode|agy|pi|cursor|vscode|zed|windsurf|claude-desktop|all> [--scope project|user] [--force]
   ab endpoint [list] | add <name> <baseUrl> [--type openai|anthropic] [--model m] [--api-key-env VAR] | remove <name>

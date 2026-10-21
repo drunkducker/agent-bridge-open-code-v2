@@ -1,4 +1,4 @@
-﻿# Provider quota support
+# Provider quota support
 
 AgentBridge separates **proactive remaining-quota measurements** from **error-driven fallback**. A provider's billing balance, historical token totals, or a harness's own request limits do not tell AgentBridge what percentage remains in an OAuth subscription window.
 
@@ -8,7 +8,7 @@ AgentBridge separates **proactive remaining-quota measurements** from **error-dr
 |---|---|---|
 | Claude Code | Live OAuth usage windows, including session and weekly | Subscription OAuth identity; API-key execution does not expose this subscription quota. |
 | Codex | Live ChatGPT account usage windows, including primary and weekly | Subscription account identity; API-key execution does not expose this subscription quota. |
-| Antigravity (`agy`) | Native read-only JSON from `agy -p /usage --output-format json` | Requires AGY 1.1.11 or later; currently observed CLI 1.2.16. Reports provider model-family pools with five-hour and weekly windows, not separate per-model budgets. |
+| Antigravity (`agy`) | Native read-only JSON from `agy -p /usage --output-format json` | Requires AGY 1.1.11 or later (the first release where `/usage` runs as a no-turn command; older CLIs are reported as unknown, see `MIN_READ_ONLY_USAGE_VERSION` in `src/quota/antigravity.ts`). 1.2.16 is the newest CLI this reader was observed against, not a requirement. Reports provider model-family pools with five-hour and weekly windows, not separate per-model budgets. |
 | Gemini CLI (conditional) | OAuth Code Assist `retrieveUserQuota` request buckets | Internal Gemini CLI protocol, file-based OAuth credentials only. Buckets must match the selected model. Reported reset is used when present; the endpoint does not identify a window duration, so `windowMinutes` remains 0. |
 
 The AGY CLI's `/usage` command and status-line quota fields are documented by the [AGY CLI changelog](https://github.com/google-antigravity/antigravity-cli/blob/main/CHANGELOG.md), [usage command guide](https://www.agy.dev/docs/cli/commands/usage/), and [status-line reference](https://www.agy.dev/docs/cli/statusline/). Its observed quota is pool-level: selecting a model in that family does not create an independent allowance.

@@ -34,6 +34,10 @@ export const BOOL = new Set([
   'wait-for-quota',
   'dangerously-skip-permissions',
   'yolo',
+  'offline',
+  'isolated',
+  'app-server',
+  'delete-dir',
 ]);
 const SHORT: Record<string, string> = {
   m: 'model',

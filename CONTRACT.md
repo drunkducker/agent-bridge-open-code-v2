@@ -32,16 +32,26 @@ export interface AgentAdapter {
 - `env`?: Record<string, string>
 - `jsonSchema`?: object
 - `extraArgs`?: string[]
+- `isolated`?: boolean (run without the user's local config/plugins/slash commands where supported)
+- `fallback`?: `Array<string | { agent, model?, ... }>` and `fallbackOn`?: error codes that trigger it (default `RATE_LIMITED`)
+- `quotaPolicy`?: proactive quota routing (`minRemainingPercent`, `waitForReset`, `maxWaitMs`)
+- `harness`?: `'auto'` | `'claude'` | `'pi'` | `'none'` (which CLI executes an HTTP endpoint)
+- `offline`?: boolean (no network tools; disables MCP passthrough)
+- `appServer`?: boolean (shorthand for `transport: 'app-server'`)
+- `yolo`?: boolean (Codex only) and `dangerouslySkipPermissions`?: boolean (Claude only); both require `permissions: 'full'`
+- `skills`?: boolean (let children see skills), `mcpPassthrough`?: string[] (host MCP servers children may use)
+- `images`?: attached images, `writableRoots`?: extra writable directories, `defaultPermissions`?: boolean
 
 ### Normalized AgentEvent
 - `{ type: 'session', id: string }`
 - `{ type: 'text', delta: string }`
 - `{ type: 'thinking', delta: string }`
 - `{ type: 'tool', name: string, input: any, output?: any }`
-- `{ type: 'usage', input: number, output: number, cost?: number }`
+- `{ type: 'usage', input: number, output: number, cost?: number, incremental?: boolean }`
 - `{ type: 'error', message: string }`
 - `{ type: 'raw', data: any }`
 - `{ type: 'fallback', from: string, to: string, code: string, message: string }`
+- `{ type: 'quota', phase: 'waiting' | 'ready' | 'skipped', agent: string, message: string, threshold: number, remainingPercent?: number, resetAt?: number, nextCheckAt?: number }`
 
 ### Normalized RunResult
 - `{ text: string, sessionId?: string, usage: { input: number, output: number, cost?: number }, exitCode: number, model?: string, durationMs: number, timedOut: boolean }`
@@ -75,7 +85,7 @@ export interface AgentAdapter {
 
 ### G. MCP Timeout Propagation & 60s Cutoff Elimination
 - `McpServerConfig.timeout` is fully typed, validated, and propagated across all adapters (Codex, Pi, OpenCode, Antigravity, Claude).
-- Installers (`install`, `setup`, `install-ide`) configure standard `"timeout": 300` across all registered client configurations (Pi, OpenCode, Claude, Codex, Cursor, VS Code, Zed, Windsurf), completely eliminating the MCP SDK default 60-second execution cutoff.
+- Installers (`install`, `setup`, `install-ide`) configure standard `"timeout": 300` (seconds) across the registered client configurations (Pi, OpenCode, Claude, Cursor, VS Code, Zed, Windsurf); Codex uses its native `tool_timeout_sec` key instead (legacy `timeout` entries are migrated), completely eliminating the MCP SDK default 60-second execution cutoff.
 - `ask_*` and `dispatch_*` tool schemas support both `timeout` and `timeoutSeconds`.
 
 ### H. Universal Open Agent Skills & Collision Guard
@@ -89,11 +99,11 @@ export interface AgentAdapter {
 ## 3. Directory Structure
 ```
 src/
-├── adapters/       # Agent-specific drivers (claude, codex, opencode, agy, pi, cursor, grok, gemini, devin, acp, endpoint)
+├── adapters/       # Agent-specific drivers (claude, codex, codex-daemon, opencode, agy, pi, cursor, grok, gemini, devin, acp, endpoint) + cli-json-lines (shared runner for cursor/grok/gemini/devin)
 ├── bridge/         # Stdio MCP server exposing tools (ask_*, dispatch_*, checkpoints, quota)
 ├── cli/            # Command line commands (run, ask, fanout, install, setup, quota, ui)
 ├── core/           # Catalog, spawn, errors, events, sandboxing, shared resources
-├── extras/         # Environment diagnostics (ab doctor)
+├── extras/         # Environment diagnostics (ab doctor: probes every catalog agent + endpoint; a missing CLI is [skip], exit 1 only on real problems or when no agent is usable)
 ├── quota/          # Rate limits, token counters, quota trackers
 ├── server/         # OpenAI / Anthropic proxy compatibility server
 ├── telemetry/      # Usage tracking, context policy, compaction, memory retention, hooks

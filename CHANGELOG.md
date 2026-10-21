@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Diagnostics
+- **`ab doctor` probes every agent:** it now covers every `BUILTIN_AGENTS` entry (adding `cursor`, `grok`, `gemini`, `devin`, `acp`) plus configured endpoints (`ollama` and custom). A missing CLI or an endpoint nothing listens on is `[skip]` (informational), so the exit code is 1 only for real problems: Node < 22, an installed agent whose `--live` call fails, or no usable agent at all (new `agents` check). An installed CLI with no login is a warning and not counted as usable. `--json` keeps its shape; it gains the `skip` status, a top-level `usable` list and `endpoint`/`reachable` fields for endpoints. New machine-independent `acceptance/doctor.test.mjs` (private `PATH`).
+- **Boolean flags:** `--offline`, `--isolated`, `--app-server` and `--delete-dir` no longer swallow the next argument; `ab handoff --no-seed` now takes effect.
+
 ### Resource safety
 - **Concurrent process cap:** `AGENTBRIDGE_MAX_PROCS` (default 24, `0` = unlimited) limits live agent processes per AgentBridge process. Beyond it, spawns fail with `RATE_LIMITED` (HTTP 429 with `retry-after` in the proxy) instead of exhausting RAM.
 - **Orphan cleanup:** background children left in an agent's process group after the CLI exits are now terminated, and the exit handler escalates to SIGKILL synchronously.
@@ -12,6 +16,9 @@
 - `runAsSubagent` and `mcpConfigFor` are exported from the package root (the documented deep imports were blocked by the `exports` map).
 
 ### Documentation
+- REFERENCE.md: complete table of contents with resolving anchors; documented `ab sweep`, `--isolated`, `--app-server`, `--concurrency`, `--agents`, `--no-seed`, `--delete-dir`, `--ceiling`, `--non-interactive`, `ab doctor --port/--no-models`, `ab wait|watch --timeout` (default 600 s), `ab ui --host/--allow-non-loopback`, the short flags, the remaining environment variables, the `fallback`/`quota` events, the seventh error code `RATE_LIMITED` and the full `RunOptions` list; updated doctor output, Devin command and test/layout sections.
+- CONTRACT.md (RunOptions, events, Codex `tool_timeout_sec`, adapters), README_AI.md (all `ask_*` tools, `list_runs`/`retain_run`/`release_run`/`check_quota`, `idempotencyKey`), EXTENDING.md (catalog-driven doctor, `attach.ts`, links), CONTRIBUTING.md (directory and adapter lists) and PROVIDER_QUOTA_SUPPORT.md (BOM removed; AGY 1.1.11 minimum vs 1.2.16 observed) aligned with the code.
+- The `agentbridge-delegate` skill no longer carries internal "Phase 4-7 Hardening" release notes; the usage-relevant points are kept in a short "Behavior worth knowing" section.
 - README rewritten; the proxy is described as a harness proxy and API mode as CLI-executed. New PROXY.md sections on what is written to disk and concurrency limits.
 - Corrected REFERENCE.md (default permissions, import paths, links, unfenced CLI block, missing flags, MCP tool parameters, env vars), SECURITY.md credential wording, and the `agentbridge-delegate` skill (agent list, links, transport default).
 
@@ -67,6 +74,12 @@
   - Resolved Windows 8.3 short names (`RUNNER~1`) vs long path discrepancies in `createSandbox` and worktree isolation.
   - Normalized drive casing and symlink paths in `findProjectRoot` and `getRepoHash` for bulletproof memory persistence across all platforms.
   - Streamlined per-execution skill write deduplication across harnesses.
+
+### Also in 0.4.2 (from git history)
+- `serveHttp` compares the bearer token with `timingSafeEqual`; the MCP `serverInfo` version now comes from `src/core/version.ts`; `mcpPassthrough` drops are reported with their reason (6855c82).
+- Proxy: Host-header validation, CSRF-safe dashboard, pinned image fetch, 400 on malformed messages (b9287cf, 6746210).
+- `cursor`, `devin`, `gemini` and `grok` share one JSON-lines runner (`src/adapters/cli-json-lines.ts`) (76a5087).
+- `runPipeline` is exported from the package root and `ab ensemble` accepts `--judge-mode` (cff2dda).
 
 ## [0.4.1] - 2026-10-09
 
