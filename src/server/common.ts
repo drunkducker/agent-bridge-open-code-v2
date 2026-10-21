@@ -1,5 +1,5 @@
 // Shared helpers for the OpenAI/Anthropic compat proxy
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { randomBytes, createHash } from 'node:crypto';
@@ -373,7 +373,8 @@ const FINISH: Record<string, string> = {
 
 export async function* runAgent(o: any): AsyncGenerator<{ type: string; delta: string }, any, void> {
   const isAgent = o.mode === 'agent';
-  if (!isAgent) cwd ||= mkdtempSync(path.join(tmpdir(), 'agentbridge-proxy-'));
+  // Recreate the shared scratch dir if something (a tmp cleaner, another proxy in this process) removed it.
+  if (!isAgent && (!cwd || !existsSync(cwd))) cwd = mkdtempSync(path.join(tmpdir(), 'agentbridge-proxy-'));
   const { agent, model } = o.target;
   const aname = typeof agent === 'string' ? agent : agent.name;
   const t0 = Date.now();

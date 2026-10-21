@@ -59,4 +59,17 @@ Read [docs/EXTENDING.md](docs/EXTENDING.md). In short: run `<cli> --help` and on
 
 Use the issue templates. Include `ab doctor --json` output (it contains no credentials), the agent and model, the command, and the error code.
 
+## Releases (maintainers)
+
+The package is published to npm as [`@rodolfonobrega/agentbridge`](https://www.npmjs.com/package/@rodolfonobrega/agentbridge) (the unscoped name is blocked by npm's similarity rule against `agent-bridge`). The `ab` and `agentbridge` commands are unchanged.
+
+```bash
+npm run release -- patch      # or minor | major | X.Y.Z; --dry-run only validates
+git push origin main --follow-tags
+```
+
+`npm run release` checks that git is clean, runs typecheck, build and tests, bumps `package.json`, adds a `CHANGELOG.md` entry, commits and tags `vX.Y.Z`. Pushing the tag triggers `.github/workflows/release.yml`, which re-runs the tests, checks that the tag matches `package.json`, publishes to npm with provenance and creates a GitHub Release with the changelog notes. CI (`ci.yml`) runs typecheck, build and tests on Linux, Windows and macOS with Node 22 and 24.
+
+One-time setup: add a repository secret named `NPM_TOKEN` (an npm granular access token with read/write on the package, 2FA bypass enabled).
+
 By contributing you agree your work is released under the MIT license.

@@ -1,6 +1,6 @@
 ---
 name: agentbridge-delegate
-description: Delegate work to other coding agents (Codex, OpenCode, Antigravity/agy, pi, Ollama endpoints) through the AgentBridge MCP tools (mcp__agentbridge__ask_*, dispatch_*). Use when the user asks for a second opinion, to run something on another agent or model, to run agents in parallel, or when a task should go to a cheaper/different model.
+description: Delegate work to other coding agents (Claude Code, Codex, OpenCode, Antigravity/agy, pi, Cursor, Grok, Gemini, Devin, ACP, Ollama endpoints) through the AgentBridge MCP tools (mcp__agentbridge__ask_*, dispatch_*). Use when the user asks for a second opinion, to run something on another agent or model, to run agents in parallel, or when a task should go to a cheaper/different model.
 ---
 
 # Delegating with AgentBridge
@@ -9,7 +9,7 @@ The MCP server `agentbridge` exposes other coding agents as tools. Each runs as 
 
 ## Tools
 
-- `ask_<agent>`: run and wait. Agents: `codex`, `opencode`, `agy`, `pi`, plus any endpoint added with `ab endpoint add` (e.g. `ask_ollama`, custom OpenAI/Anthropic/OpenRouter endpoints).
+- `ask_<agent>`: run and wait. Agents: `claude`, `codex`, `opencode`, `agy`, `pi`, `cursor`, `grok`, `gemini`, `devin`, `acp` (those whose CLI is installed), plus any endpoint added with `ab endpoint add` (e.g. `ask_ollama`, custom OpenAI/Anthropic/OpenRouter endpoints).
 - `dispatch_<agent>`: start asynchronously, returns a run id at once. Then `wait_run` (blocks, with `timeoutSeconds`), `check_run` (status, last events, tokens), `cancel_run`, `list_runs`.
 - `send_message` / `check_messages`: inbox for a run id or agent name (no live injection into a running agent).
 - **Git Checkpoint Tools (Fail-safe Workspace Snapshots):**
@@ -49,7 +49,7 @@ AgentBridge is engineered with a **Zero-Accident Safety Lock**:
 | `read-only` *(default)* | Requests read-only behavior. | Reviews, code audits, questions, file inspection. | Provider-native sandbox, tool filters, deny rules, or prompt guidance. |
 
 > **How AgentBridge Prevents Edits:**
-> **Provider-specific enforcement:** Claude Code and Pi receive restricted tool lists; Codex uses its sandbox modes; Antigravity uses a throwaway profile with deny rules; Cursor uses its native ask/plan modes when applicable. Other generic CLI adapters may rely on prompt guidance or provider defaults. These controls do not guarantee that provider configuration, hooks, MCP servers, or subprocesses cannot cause side effects. See [Harness validation](../../docs/HARNESS_VALIDATION.md).
+> **Provider-specific enforcement:** Claude Code and Pi receive restricted tool lists; Codex uses its sandbox modes; Antigravity uses a throwaway profile with deny rules; Cursor uses its native ask/plan modes when applicable. Other generic CLI adapters may rely on prompt guidance or provider defaults. These controls do not guarantee that provider configuration, hooks, MCP servers, or subprocesses cannot cause side effects. See [Harness validation](https://github.com/rodolfonobrega/agentbridge/blob/main/docs/HARNESS_VALIDATION.md).
 
 ## Options that matter
 
@@ -64,7 +64,7 @@ AgentBridge is engineered with a **Zero-Accident Safety Lock**:
 - `timeoutSeconds`: task lifetime limit in **seconds**, always (default 300; `2400` = 40 min). Prefer it over `timeout`. The legacy alias `timeout` reads values at least 1000 as milliseconds (`timeout: 2400` = 2.4 s), so do not use it for long runs.
 - `session`: `{mode:'continue', id}` to follow up in the same agent conversation (`new`, `ephemeral`, `continue`, `fork`).
 - `fallback`: e.g. `["codex@15","ollama:glm-5.3-flash:cloud"]` or `{ agent: "codex", minRemainingPercent: 15, model }`. A route threshold overrides the primary quota threshold; CLI syntax puts `@N` before the first colon, as in `codex@15:model`. If a route override is present without a global quota setting, CLI enables the default 20% primary threshold. Do not assign a threshold to unmetered Ollama. If the agent fails with `RATE_LIMITED` (or a code listed in `fallbackOn`), the next one answers. It is skipped if the first agent already ran tools under `edit`/`full`, to avoid redoing side effects. The result's `fallback` field says who answered and whether context was lost (fallback agents start a fresh session).
-- `transport`: `auto` (default), `cli`, `app-server`.
+- `transport`: `cli` (default) or `app-server` (Codex only, opt-in).
   - Pass `transport: "app-server"` for **Codex** to run via a persistent JSON-RPC 2.0 daemon instead of batch process spawns.
 - `quotaPolicy`: `{ minRemainingPercent, waitForReset?, maxWaitMs? }` gates an ordered route on measured remaining quota. Unknown measurements do not pass the threshold; quota waiting is separate from execution timeout.
 - Codex `yolo: true` (CLI `--yolo`) requests Codex's native bypass mode and requires explicit `permissions: "full"`; it does not raise the operator permission ceiling.
@@ -72,7 +72,7 @@ AgentBridge is engineered with a **Zero-Accident Safety Lock**:
 - OpenCode `full` uses its native `allow` permission configuration and approves permission requests once; Antigravity (`agy`) `full` requests its native `--dangerously-skip-permissions` mode.
 - Cursor `full` uses `--force`; `read-only` and `plan` use Cursor's native `ask` and `plan` modes. Gemini `full` uses `--yolo`. Grok `full` requests `--permission-mode bypassPermissions`. Devin uses `--permission-mode dangerous` for `full` and `normal` otherwise; its lower modes are not an OS isolation boundary.
 - Pi applies its tool filter for restricted modes and has no dedicated native YOLO flag. `--yolo` is a Codex-only AgentBridge option; it is not a generic cross-harness flag.
-- Generic adapter permission modes can be advisory. Do not assume `read-only`/`plan` prevent provider hooks, MCP configuration, or subprocesses from causing side effects. See [Harness validation](../../docs/HARNESS_VALIDATION.md) for the documented scope and checks.
+- Generic adapter permission modes can be advisory. Do not assume `read-only`/`plan` prevent provider hooks, MCP configuration, or subprocesses from causing side effects. See [Harness validation](https://github.com/rodolfonobrega/agentbridge/blob/main/docs/HARNESS_VALIDATION.md) for the documented scope and checks.
 
 ## MCP results, waits, and timeouts
 
@@ -159,7 +159,7 @@ When delegating tasks via `ask_*` or `dispatch_*`, AgentBridge enforces **determ
   7. **Accounts (`ab account add <agent> <name>`):** new profiles keep their own login and sessions but share your skills, prompts, plugins and, for Codex, your `[mcp_servers.*]` (via junction/symlink, copy as fallback). `--no-share` starts empty; `--copy-current` copies everything including the login.
 
 - **Pre-Delegation Checklist (Verifying MCP & Tool Readiness):**
-  - **Verify with `ab doctor`:** Run `ab doctor` to inspect which host MCPs are detected for each installed harness (`claude`, `codex`, `pi`, `opencode`, `agy`).
+  - **Verify with `ab doctor`:** Run `ab doctor` to inspect which host MCPs are detected for each installed harness (`claude`, `codex`, `pi`, `opencode`, `agy`; other agents are not probed).
   - **Probe Tool Readiness:** If unsure whether a subagent can reach a specific tool, send a lightweight diagnostic probe first:
     `ask_pi({ "prompt": "List all your available tools.", "permissions": "read-only" })`
   - **Direct Host Execution:** If a task strictly requires an MCP server that is only present in your primary agent session and cannot be passed through, execute that task directly in the host agent rather than delegating to an isolated subagent.
@@ -185,7 +185,7 @@ When delegating tasks via `ask_*` or `dispatch_*`, AgentBridge enforces **determ
 
 ## Quota checks and fallback
 
-AgentBridge has proactive remaining-percentage readers for Claude Code, Codex, Antigravity (`agy`), and conditional Gemini OAuth. See the [provider quota support matrix](../../docs/PROVIDER_QUOTA_SUPPORT.md) for scope and limitations. AGY quota is shared by model family (five-hour and weekly windows). Gemini quota is model-specific, file-based OAuth only, and has unknown window duration; expired or unavailable credentials, API-key, and Vertex identities report unknown. Cursor, Grok, Devin, OpenCode, Pi, Ollama, and custom endpoints have no supported measured percentage reader. Unknown or unsupported values do not mean unlimited.
+AgentBridge has proactive remaining-percentage readers for Claude Code, Codex, Antigravity (`agy`), and conditional Gemini OAuth. See the [provider quota support matrix](https://github.com/rodolfonobrega/agentbridge/blob/main/docs/PROVIDER_QUOTA_SUPPORT.md) for scope and limitations. AGY quota is shared by model family (five-hour and weekly windows). Gemini quota is model-specific, file-based OAuth only, and has unknown window duration; expired or unavailable credentials, API-key, and Vertex identities report unknown. Cursor, Grok, Devin, OpenCode, Pi, Ollama, and custom endpoints have no supported measured percentage reader. Unknown or unsupported values do not mean unlimited.
 
 With no quota policy flags or fallback `@N` threshold, fallback is error-driven: it defaults to `RATE_LIMITED`, and `fallbackOn` / `--fallback-on` can add errors such as `TIMEOUT` and `AGENT_FAILED`. If tools already ran under `edit` or `full`, fallback is skipped to avoid repeating possible side effects.
 
@@ -286,8 +286,8 @@ If you have shell execution access, you can run high-level orchestration workflo
 
 ## Provider & Adapter Safety Guarantees (Phase 4 Hardening)
 
-- **Harness-specific permission requests:** AgentBridge applies provider-native flags, modes, tool filters, or prompt guardrails as available. A `read-only` or `plan` request on a generic CLI adapter is not necessarily an OS-level sandbox and does not guarantee that provider configuration, hooks, MCP servers, or subprocesses cannot cause side effects. See [Harness validation](../../docs/HARNESS_VALIDATION.md) for provider-specific behavior and verification scope.
-- **Unsupported options:** Adapter-specific unsupported parameters (such as session fork for ephemeral endpoints or images for text-only drivers) are rejected with `AgentError('BAD_OPTION')` where implemented. See [Harness validation](../../docs/HARNESS_VALIDATION.md) for provider-specific compatibility notes.
+- **Harness-specific permission requests:** AgentBridge applies provider-native flags, modes, tool filters, or prompt guardrails as available. A `read-only` or `plan` request on a generic CLI adapter is not necessarily an OS-level sandbox and does not guarantee that provider configuration, hooks, MCP servers, or subprocesses cannot cause side effects. See [Harness validation](https://github.com/rodolfonobrega/agentbridge/blob/main/docs/HARNESS_VALIDATION.md) for provider-specific behavior and verification scope.
+- **Unsupported options:** Adapter-specific unsupported parameters (such as session fork for ephemeral endpoints or images for text-only drivers) are rejected with `AgentError('BAD_OPTION')` where implemented. See [Harness validation](https://github.com/rodolfonobrega/agentbridge/blob/main/docs/HARNESS_VALIDATION.md) for provider-specific compatibility notes.
 - **Abort & Timeout Propagation:**
   All adapters check child-process timeout (`r.timedOut`) and abort cancellation (`r.aborted`) after waiting, cleanly raising `TIMEOUT` and `ABORTED` with partial output preserved for telemetry.
 - **DAG Pipeline Integrity:**
@@ -330,7 +330,7 @@ If you have shell execution access, you can run high-level orchestration workflo
 ## Tooling, Installers & Ecosystem Guarantees (Phase 7 Hardening)
 
 - **Centralized Agent Catalog (`src/core/catalog.ts`):**
-  All native agents (`claude`, `codex`, `opencode`, `agy`, `pi`) and account rules are defined in one central catalog (`BUILTIN_AGENTS`, `VALID_ACCOUNT_AGENTS`), so the CLI, proxy, MCP and profile management never drift apart.
+  All built-in agents (`claude`, `codex`, `opencode`, `agy`, `pi`, `cursor`, `grok`, `gemini`, `devin`, `acp`) and account rules are defined in one central catalog (`BUILTIN_AGENTS`, `VALID_ACCOUNT_AGENTS`), so the CLI, proxy, MCP and profile management never drift apart.
 - **Universal IDE Compatibility (`process.execPath`):**
   IDE installers (`ab install vscode|cursor|zed|windsurf`) use the canonical `process.execPath` instead of fragile `node` lookups on PATH, preventing `node: command not found` errors when the IDE is launched from a desktop environment with a restricted PATH.
 - **Transactional MCP Updates & Corruption Defense:**

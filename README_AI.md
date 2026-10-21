@@ -275,10 +275,10 @@ ab serve --port 8787
 ```
 
 ### Modes & Code Examples:
-1. **API Mode (Default - `/v1/chat/completions`):**
+1. **API mode (default, `/v1/chat/completions`, `/v1/messages`):** an API-shaped request executed by the real CLI (plain chat, tools off). Only HTTP endpoints are called directly:
    - Base URL: `http://127.0.0.1:8787/v1`
    - Model name: `claude/haiku`, `codex/gpt-5`, `agy/gemini-3.8-flash-low`, `pi/ollama/qwen3:14b`, etc.
-   - Operates as a standard OpenAI/Anthropic LLM API, using the user's subscription behind the scenes.
+   - The CLI runs behind the scenes with the user's login; sampling parameters are ignored and usage includes CLI overhead. See docs/PROXY.md.
 
    **Python (Official `openai` SDK):**
    ```python

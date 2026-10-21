@@ -1,5 +1,20 @@
 # Changelog
 
+## [Unreleased]
+
+### Resource safety
+- **Concurrent process cap:** `AGENTBRIDGE_MAX_PROCS` (default 24, `0` = unlimited) limits live agent processes per AgentBridge process. Beyond it, spawns fail with `RATE_LIMITED` (HTTP 429 with `retry-after` in the proxy) instead of exhausting RAM.
+- **Orphan cleanup:** background children left in an agent's process group after the CLI exits are now terminated, and the exit handler escalates to SIGKILL synchronously.
+- **Proxy scratch directory** is recreated if it was removed while the server runs (previously every API-mode request failed with `cwd does not exist`).
+- Proxy startup trims old per-request telemetry records.
+
+### API
+- `runAsSubagent` and `mcpConfigFor` are exported from the package root (the documented deep imports were blocked by the `exports` map).
+
+### Documentation
+- README rewritten; the proxy is described as a harness proxy and API mode as CLI-executed. New PROXY.md sections on what is written to disk and concurrency limits.
+- Corrected REFERENCE.md (default permissions, import paths, links, unfenced CLI block, missing flags, MCP tool parameters, env vars), SECURITY.md credential wording, and the `agentbridge-delegate` skill (agent list, links, transport default).
+
 ## [0.5.2] - 2026-10-13
 
 ### Documentation & Agent Skill

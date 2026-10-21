@@ -96,9 +96,46 @@ const live = new Set<ChildProcess>();
 const SIGS: Record<string, number> = { SIGINT: 2, SIGTERM: 15, SIGHUP: 1, SIGBREAK: 21 };
 const sigHandlers = new Map<string, any>();
 const killAll = () => {
-  for (const c of live) killTree(c);
+  for (const c of live) {
+    killTree(c);
+    // Process exit cannot wait for killTree's delayed SIGKILL, so escalate now (POSIX group).
+    if (!isWin && c.pid != null) {
+      try {
+        process.kill(-c.pid, 'SIGKILL');
+      } catch {
+        /* group gone */
+      }
+    }
+  }
   live.clear();
 };
+
+/** Maximum agent processes alive at once in this Node process (override: AGENTBRIDGE_MAX_PROCS, 0 = unlimited). */
+export const DEFAULT_MAX_PROCS = 24;
+function maxProcs(): number {
+  const raw = process.env.AGENTBRIDGE_MAX_PROCS;
+  if (raw == null || raw === '') return DEFAULT_MAX_PROCS;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : DEFAULT_MAX_PROCS;
+}
+
+/** Reap anything the leader left running in its process group after it exited on its own. */
+function sweepGroup(child: ChildProcess): void {
+  if (isWin || child.pid == null) return;
+  const pid = child.pid;
+  try {
+    process.kill(-pid, 'SIGTERM');
+  } catch {
+    return; // group already empty
+  }
+  setTimeout(() => {
+    try {
+      process.kill(-pid, 'SIGKILL');
+    } catch {
+      /* group gone */
+    }
+  }, 250).unref();
+}
 
 function acquire(): void {
   if (sigHandlers.size) return;
@@ -245,6 +282,14 @@ export function spawnProc(cmd: string, args: (string | number)[] = [], opts: Spa
     }
     if (!ok) throw new AgentError('BAD_OPTION', `cwd does not exist or is not a directory: ${opts.cwd}`, { agent: opts.agent });
   }
+  const cap = maxProcs();
+  if (cap > 0 && live.size >= cap) {
+    throw new AgentError('RATE_LIMITED', `Too many concurrent agent processes (${live.size}/${cap}); retry shortly or raise AGENTBRIDGE_MAX_PROCS`, {
+      agent: opts.agent,
+      retryAfterMs: 2000,
+      kind: 'overloaded',
+    });
+  }
   const env: NodeJS.ProcessEnv = { ...process.env };
   for (const [k, v] of Object.entries(opts.env || {})) {
     if (v === undefined || v === null) delete env[k];
@@ -329,6 +374,7 @@ export function spawnProc(cmd: string, args: (string | number)[] = [], opts: Spa
       if (graceTimer) { clearTimeout(graceTimer); graceTimer = null; }
       if (timer) clearTimeout(timer);
       live.delete(child); release();
+      sweepGroup(child);
       opts.signal?.removeEventListener('abort', onAbort);
       forceEndStdout();
       releaseStdio();

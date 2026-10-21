@@ -3,7 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, realpathSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, realpathSync, mkdirSync, symlinkSync, copyFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -12,7 +12,13 @@ const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const MAIN = path.join(ROOT, 'dist', 'cli', 'main.js');
 const home = realpathSync(mkdtempSync(path.join(tmpdir(), 'ab-ready-')));
 mkdirSync(path.join(home, 'proj'));
-const env = { ...process.env, PATH: path.dirname(process.execPath), Path: path.dirname(process.execPath), HOME: home, USERPROFILE: home, LOCALAPPDATA: path.join(home, 'la'), APPDATA: path.join(home, 'ad'), CODEX_HOME: path.join(home, 'cx'), PI_CODING_AGENT_DIR: path.join(home, 'pi') };
+// PATH must hold node and nothing else. node's own directory can also hold globally installed agent CLIs
+// (nvm, npm prefix, /usr/local/bin), so expose only a link to the node binary in a private directory.
+const bin = path.join(home, 'bin');
+mkdirSync(bin);
+const nodeLink = path.join(bin, path.basename(process.execPath));
+try { symlinkSync(process.execPath, nodeLink); } catch { copyFileSync(process.execPath, nodeLink); }
+const env = { ...process.env, PATH: bin, Path: bin, HOME: home, USERPROFILE: home, LOCALAPPDATA: path.join(home, 'la'), APPDATA: path.join(home, 'ad'), CODEX_HOME: path.join(home, 'cx'), PI_CODING_AGENT_DIR: path.join(home, 'pi') };
 const node = (args, { wait = 0 } = {}) => new Promise((res) => {
   const p = spawn(process.execPath, args, { env, cwd: path.join(home, 'proj') });
   let o = '', e = '';

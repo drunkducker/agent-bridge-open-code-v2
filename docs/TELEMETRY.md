@@ -10,7 +10,7 @@ State lives in `~/.agentbridge/` (override with `AGENTBRIDGE_HOME`): `telemetry/
 
 ## Using it
 ```js
-import { runWithTelemetry, askWithTelemetry, stats, contextOf, setPolicy, handoff, compact, wait } from 'agentbridge';
+import { runWithTelemetry, askWithTelemetry, stats, contextOf, setPolicy, handoff, compact, wait } from '@rodolfonobrega/agentbridge';
 const r = await askWithTelemetry('claude', { prompt, cwd }, { hooks: { finish: [{ http: 'http://127.0.0.1:9000/done' }] }, policy: { warn: 0.7 } });
 stats();                      // global + per agent + per session + per run, persisted to telemetry/stats.json
 contextOf(r.sessionId);       // {tokens, exact, source, window, windowSource, pct}

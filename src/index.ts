@@ -707,3 +707,5 @@ export { startProxy, type ProxyOptions, type RunningProxy } from './server/index
 export * from './types/index.js';
 
 export default { agents, run, ask, AgentError, installIde, SubagentRoster };
+export { runAsSubagent } from './bridge/subagent.js';
+export { mcpConfigFor } from './bridge/attach.js';

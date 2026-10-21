@@ -66,7 +66,7 @@ Plain Node ESM: a TypeScript source tree compiled to plain JavaScript in `dist/`
   - `pi` (`npm i -g @earendil-works/pi-coding-agent`; any provider/model configured in pi)
 - `git` on your `PATH` (only needed for the `--worktree` option)
 
-agentbridge never asks for or stores credentials. It spawns the CLIs, which use their own local auth.
+agentbridge never asks for passwords or API keys and has no login flow of its own. It spawns the CLIs, which use their own local auth. It reads existing CLI login files only for quota measurement (Claude, Codex, Gemini OAuth), and `ab account add --copy-current` copies a CLI config directory, login files included, into a managed profile.
 
 ## Installation
 
@@ -194,11 +194,13 @@ for (;;) {
 
 The binary is available as `agentbridge` and `ab`.
 
+```
 ab run <agent> [prompt|-] [--model][--effort][--permissions][--cwd][--timeout s]
                            [--session new|ephemeral|continue|fork][--session-id id]
                            [--system][--json-schema '<json>'][--stream][--json]
                            [--fallback a[@N][:model],...][--fallback-on RATE_LIMITED,TIMEOUT,...]
                            [--min-remaining-percent N][--wait-for-quota][--max-quota-wait seconds][--yolo]
+                           [--harness auto|claude|pi|none][--dangerously-skip-permissions]
                            [--worktree][--max-cost][--max-tokens][--max-time s]
 ab ask <agent> [prompt|-] [same flags]           # prints only the result text
 ab fanout "<prompt>" agent[:model] ...           # run all, collect all
@@ -217,16 +219,20 @@ ab context <session> [--agent a]
 ab handoff <session> --to <agent>
 ab watch <run> | ab wait <run> | ab cancel <run>
 ab serve [--port][--host][--token][--allow-non-loopback][--fallback agent[@N][:model],...]
+         [--config file.json][--agent-root dir][--agent-max-permission read-only|plan|edit|full][--log file.jsonl]
          [--min-remaining-percent N][--wait-for-quota][--max-quota-wait seconds][--accounts file.json --accept-tos-risk]
 ab bridge                                        # stdio MCP server
+ab sweep                                         # delete expired bridge run records; prints {total, removed}
 ab doctor [--live][--json]
 ab setup | ab wizard [--yes]
-ab install <claude|codex|opencode|agy|pi|cursor|vscode|zed|windsurf|claude-desktop|all> [--scope project|user]
+ab install <claude|codex|opencode|agy|pi|cursor|vscode|zed|windsurf|claude-desktop|all> [--scope project|user] [--force]
 ab endpoint [list] | add <name> <baseUrl> [--type openai|anthropic] [--model m] [--api-key-env VAR] | remove <name>
 ```
 
 Notes:
 
+- `--dangerously-skip-permissions` (Claude only) adds Claude's literal flag; it requires `--permissions full` and is rejected as root. `--yolo` (Codex only) likewise requires `--permissions full`. `--harness` selects which CLI executes an HTTP endpoint (`none` = plain chat); it is chosen automatically when tools or non-read-only permissions are requested.
+- Exit codes: 2 for usage errors and `BAD_OPTION`, 1 for every other failure. `--session-id` alone implies `--session continue`. A `default-agent` config key lets `ab run` omit the agent.
 - `ab install codex|opencode|agy|pi` register the same MCP bridge in those CLIs (Codex: `codex mcp add`, global `~/.codex/config.toml`; Antigravity: `agy mcp add`, global; OpenCode: the `mcp` block of `opencode.json` in the project, or of the global file with `--scope user`; a config that is not plain JSON is refused untouched) and put the skill in `.agents/skills/` (or `~/.agents/skills/` with `--scope user`), the shared folder those CLIs read. `ab install all` does every CLI that is installed. pi: `pi mcp add agentbridge --exposure direct` (global `~/.pi/agent/mcp.json`, so the `ask_*` tools are declared to the model) plus the same `.agents/skills/` folder pi reads; verified that pi connects to the bridge and lists its tools (a model call through pi was not verified: no model is configured in this pi). Verified live: OpenCode and Antigravity saw the skill and called the bridge tools; for Codex only the registration was verified (its usage limit was exhausted during the check).
 - `ab install codex --auto-approve` sets `default_tools_approval_mode = "approve"` on the bridge server in Codex's config. Without it, interactive Codex asks once per tool and `codex exec` fails with "MCP tool call requires approval".
 - Codex MCP server deadlines use its native `tool_timeout_sec` setting in seconds. `ab install codex --timeout N` writes that key; legacy `timeout` entries for AgentBridge are migrated when the installer updates the Codex config. Temporary HTTP bridges injected for Codex use 300 seconds.
@@ -382,7 +388,7 @@ const c = await ask('claude', { prompt: 'Try a different approach', session: { m
 
 ### Permissions and effort mapping
 
-`permissions` and `effort` are mapped to each CLI's native concepts (sandbox modes, permission modes, reasoning effort). `full` is the default everywhere. In the bridge, a child agent can never receive permissions above its caller ceiling.
+`permissions` and `effort` are mapped to each CLI's native concepts (sandbox modes, permission modes, reasoning effort). The default is `read-only`; the permission ceiling defaults to `full`. In the bridge, a child agent can never receive permissions above its caller ceiling.
 
 ### Web Search, Tools, and Network Permissions Across Agents & Modes
 
@@ -974,6 +980,8 @@ ab install all            # Detects and configures all present CLIs on PATH
 
 ---
 
+## New providers (Cursor, Grok, Gemini, Devin, ACP)
+
 AgentBridge supports an extended roster of modern AI agents and protocols. Current CLI argument mappings and local readiness status for the additional harnesses are recorded in [Harness validation](HARNESS_VALIDATION.md).
 
 | Provider | Identifier | Command | Supported Models |
@@ -996,12 +1004,14 @@ The bridge is a dependency-free stdio MCP server (`ab bridge`, or `src/bridge/mc
 - `wait_run`, `check_run`, `cancel_run`, `list_runs`, `retain_run`, `release_run` — manage async runs
 - `send_message`, `check_messages` — simple inbox between runs/agents
 
-Each `ask_*` tool accepts `prompt`, `model`, `effort`, `permissions`, `cwd`, `timeoutSeconds`, `session` and `systemPrompt`.
+Each `ask_*`/`dispatch_*` tool accepts `prompt`, `model`, `effort`, `permissions`, `cwd`, `timeoutSeconds` (seconds, default 300), `session`, `systemPrompt`, `fallback`, `fallbackOn`, `quotaPolicy`, `offline`, `mcpPassthrough`, `skills`, `transport`, `harness`, `subdelegation`, `yolo` and `dangerouslySkipPermissions`. `dispatch_*` also takes `idempotencyKey` (a repeated key returns the existing run instead of starting a second one). The legacy `timeout` alias treats values of 1000 or more as milliseconds; prefer `timeoutSeconds`. `check_quota` is also exposed. The authoritative schema is whatever `tools/list` returns from `ab bridge`.
+
+The bridge refuses to start more than `AGENTBRIDGE_MAX_PROCS` agent processes at once (default 24); extra calls fail with `RATE_LIMITED`.
 
 ### Programmatic subagent
 
 ```js
-import { runAsSubagent } from 'agentbridge/dist/bridge/subagent.js';
+import { runAsSubagent } from '@rodolfonobrega/agentbridge';
 
 // Codex is the caller; it delegates to Claude through the bridge.
 const r = await runAsSubagent({
@@ -1022,8 +1032,7 @@ console.log(r.delegated, r.meta, r.text);   // r.meta is the server-attested pro
 ### Attaching the bridge to an agent manually
 
 ```js
-import { ask } from '@rodolfonobrega/agentbridge';
-import { mcpConfigFor } from 'agentbridge/dist/bridge/attach.js';
+import { ask, mcpConfigFor } from '@rodolfonobrega/agentbridge';
 
 await ask('claude', {
   prompt: 'Use ask_codex to ask codex for a haiku about Node.js, then show me its answer.',
@@ -1293,7 +1302,7 @@ The handoff document contains Summary, Key facts and decisions, Key files and Op
 
 CLI: `ab context <session>`, `ab handoff <session> --to codex`, `ab stats`, `ab top`.
 
-State is stored in `~/.agentbridge/` (override with `AGENTBRIDGE_HOME`). More detail: [docs/TELEMETRY.md](docs/TELEMETRY.md).
+State is stored in `~/.agentbridge/` (override with `AGENTBRIDGE_HOME`). More detail: [TELEMETRY.md](TELEMETRY.md).
 
 ## Hooks
 
@@ -1334,7 +1343,7 @@ const anthropic = new Anthropic({ baseURL: 'http://127.0.0.1:8787', apiKey: 'SEC
 const msg = await anthropic.messages.create({ model: 'codex/gpt-5.6-luna', max_tokens: 256, messages: [{ role: 'user', content: 'Hello' }] });
 ```
 
-Programmatic start: `import { startProxy } from 'agentbridge'; const p = await startProxy({ port: 0 });`
+Programmatic start: `import { startProxy } from '@rodolfonobrega/agentbridge'; const p = await startProxy({ port: 0 });`
 
 | Route | Notes |
 |---|---|
@@ -1348,7 +1357,7 @@ Programmatic start: `import { startProxy } from 'agentbridge'; const p = await s
 
 **Also in the proxy:** client tool calling (claude via an MCP bridge, other agents via validated prompt emulation), an isolated-worktree **agent mode** (`agent/` prefix or `/agent/v1`, needs `--agent-root` and a token, returns a diff, `apply` is explicit), `max_tokens`/`stop` enforcement with real `finish_reason`, `x-ab-session` resume, a hot-reloaded `--config` (aliases, payload rules), an opt-in account pool (`--accounts` + `--accept-tos-risk`) and `/admin/status`, `/admin/usage`, `--log`.
 
-**Important limits:** without `x-ab-session` multi-turn messages are flattened into one prompt (each request is stateless); `temperature`, `top_p`, `seed` are ignored (listed in `x-agentbridge-ignored`); tool-mode replies are buffered; images reach only claude, codex and opencode (others get a placeholder and a warning header); the server binds to `127.0.0.1` only unless you pass `--allow-non-loopback`. Full list in [docs/PROXY.md](docs/PROXY.md).
+**Important limits:** without `x-ab-session` multi-turn messages are flattened into one prompt (each request is stateless); `temperature`, `top_p`, `seed` are ignored (listed in `x-agentbridge-ignored`); tool-mode replies are buffered; images reach only claude, codex and opencode (others get a placeholder and a warning header); the server binds to `127.0.0.1` only unless you pass `--allow-non-loopback`. Full list in [PROXY.md](PROXY.md).
 
 ---
 
@@ -1357,7 +1366,7 @@ Programmatic start: `import { startProxy } from 'agentbridge'; const p = await s
 - **Anything with an OpenAI- or Anthropic-compatible HTTP API** (Ollama, vLLM, LM Studio, LiteLLM, OpenRouter, a company gateway): no code, just `ab endpoint add <name> <baseUrl>`.
 - **A new agent CLI**: write an adapter (about 200 to 600 lines, built on the shared `spawnProc` helper) and register it in a handful of files. It is feasible only if the CLI has a headless mode with structured output, ideally resumable sessions, and local login reuse.
 
-The full guide, with the checklist, a code skeleton, the files to register in and the tests to write, is in [docs/EXTENDING.md](docs/EXTENDING.md).
+The full guide, with the checklist, a code skeleton, the files to register in and the tests to write, is in [EXTENDING.md](EXTENDING.md).
 
 ## Environment variables
 
@@ -1373,7 +1382,10 @@ The full guide, with the checklist, a code skeleton, the files to register in an
 | `AGENTBRIDGE_MODEL_<AGENT>` | Pins the callee model server-side (e.g. `AGENTBRIDGE_MODEL_CODEX`) |
 | `AGENTBRIDGE_CHILD_CWD` | Forces callee working directory |
 | `AGENTBRIDGE_DEFAULT_TIMEOUT_S` | Default bridge call timeout (default `300`) |
-| `AGENTBRIDGE_ROOT`, `AGENTBRIDGE_ATTEST_BIND`, `AGENTBRIDGE_ATTEST_KEY` | Internal: run-tree root and attestation (do not set manually) |
+| `AGENTBRIDGE_ROOT`, `AGENTBRIDGE_ATTEST_BIND`, `AGENTBRIDGE_ATTEST_KEY` | Run-tree root and attestation. Set by the bridge for subagents; `AGENTBRIDGE_ROOT` also bounds which working directories the checkpoint tools and dashboard accept. Do not set manually |
+| `AGENTBRIDGE_MAX_PROCS` | Maximum agent processes alive at once in one AgentBridge process (default 24, `0` = unlimited). Beyond it a spawn fails with `RATE_LIMITED` (HTTP 429 in the proxy) |
+| `AGENTBRIDGE_RUN_MAX_AGE_MS`, `AGENTBRIDGE_RUN_MAX_COUNT` | Retention for bridge run records (default 7 days, 500) |
+| `AGENTBRIDGE_ACCEPT_TOS_RISK` | Same as `--accept-tos-risk` for the proxy account pool |
 
 ## Testing
 

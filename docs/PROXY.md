@@ -1,4 +1,8 @@
-# agentbridge compat proxy
+# AgentBridge harness proxy
+
+This is a **harness proxy**, not a provider proxy. Gateways such as LiteLLM translate one API into many providers' HTTP APIs and need a key per provider. `ab serve` instead executes each request by **spawning an installed agent CLI** (Claude Code, Codex, ...) that is already logged in. The only exceptions are configured HTTP endpoints (Ollama, OpenRouter, any base URL), which are called directly over HTTP.
+
+Consequences you should know before relying on it: latency includes CLI start-up; sampling parameters (`temperature`, `top_p`, `seed`) are ignored for CLI-backed models; token usage is whatever the CLI reports (it includes the CLI's own overhead, so a one-word prompt can report thousands of input tokens) or an estimate; each concurrent request is a separate OS process (see [Concurrency limits](#concurrency-limits)).
 
 Serves the models of your locally installed and logged-in agent CLIs (`claude`, `codex`, `opencode`, `agy`, `pi`, plus `cursor`/`grok`/`gemini`/`devin`/`acp` when that CLI is present) and any configured HTTP endpoints (Ollama built in, or any OpenAI/Anthropic-compatible base URL) as an
 OpenAI-compatible and Anthropic-compatible HTTP API. Point an app's base URL at it; no API keys needed.
@@ -8,7 +12,7 @@ ab serve --port 8787 [--token SECRET]
 # OpenAI SDK:    baseURL = http://127.0.0.1:8787/v1
 # Anthropic SDK: baseURL = http://127.0.0.1:8787
 ```
-Programmatic: `import { startProxy } from 'agentbridge'; const p = await startProxy({ port: 0 });`
+Programmatic: `import { startProxy } from '@rodolfonobrega/agentbridge'; const p = await startProxy({ port: 0 });`
 
 ## WARNING: terms of service
 This routes requests made with your **subscription logins** (Claude, ChatGPT/Codex, etc.) through a local proxy.
@@ -217,7 +221,7 @@ res = client.chat.completions.create(
 Payload-rule keys: `defaults` fills a key only when the request leaves it unset; `override` forces it. The config file can also carry a top-level `accounts` object (same shape as the `--accounts` file) to set up the pool inline; like the pool file, it is read at startup and never hot-reloaded (and still needs `--accept-tos-risk`). A bad reload keeps the previous config. Requests in flight keep the config they started with.
 
 ## Two modes
-**API mode** (default): plain chat. Read-only, throw-away temp dir, the agent's own tools are off.
+**API mode** (default): plain chat. This is an API *shape*, not a direct API call: for `claude/*`, `codex/*`, `agy/*`, `pi/*` and `opencode/*` the request is still executed by the CLI (for Claude: `claude -p` with `--tools ''`, no MCP servers, no hooks, no `CLAUDE.md`, and your system prompt replacing Claude Code's default, wrapped in an instruction not to use tools). It runs read-only in a shared throw-away temp directory (recreated if removed) with the agent's own tools off. Only `<endpoint>/<model>` routes (Ollama, OpenRouter, custom base URLs) go straight to an HTTP API, with real usage numbers when the server reports them.
 
 **Agent mode**: the agent edits files. Select it with the model prefix `agent/` (`agent/claude/sonnet`) or the base path
 `/agent/v1`. It works in an **isolated copy** (git worktree, or a temp copy of a non-git folder), never in your folder:
@@ -255,6 +259,17 @@ When every account is cooling down the answer is 429. The pool is read at startu
 ## Observability
 `GET /admin/status` (pool and cooldowns, no secrets) and `GET /admin/usage` (requests, tokens, latency per agent/model/account/mode).
 Without a token they are only served on loopback. `--log file.jsonl` appends one line per run (no prompts or replies).
+
+## What is written to disk
+- **Stateless requests** (no `x-ab-session`): nothing persists in the agent. Claude runs with `--no-session-persistence`, Codex with `--ephemeral`, OpenCode sessions are deleted after the run. The OpenAI `user` field does not create a session.
+- **Requests with `x-ab-session`**: the first request for a key creates one real CLI session (for Claude, a transcript under `~/.claude/projects/` in the proxy's temp working directory, so it appears only in the all-projects view of `claude --resume`; Codex: `~/.codex/sessions`; OpenCode: its database). Later requests with the same key resume it and send only the new turns. Different keys create different sessions, and **nothing prunes them**: a client that invents a key per chat will accumulate one transcript per chat. Use a small, stable set of keys, or delete old sessions with the agent's own tooling.
+- **The key-to-session map lives in memory** (max 500 keys, oldest evicted) and is lost on restart. After a restart or eviction the same key starts a fresh CLI session; the old transcript remains on disk.
+- **Continuing a conversation yourself:** the session is a normal CLI session, so `claude -p --resume <session-uuid>` works from any directory. The transcript is named by the session uuid and titled by its first prompt; find it in the all-projects view of `claude --resume`. The proxy does not detect edited or regenerated history: if the client rewrites earlier turns, the resumed CLI session keeps the original ones.
+- **Always written:** one JSON record per request under `~/.agentbridge/telemetry/runs/` (pruned to the newest 500 when the proxy starts and when the dashboard lists runs), plus `--log` JSONL if enabled (append-only, no rotation; no prompts or replies).
+- **Agent mode** also leaves a worktree or copy under the system temp dir for up to 30 minutes per run, and the agent's own session transcripts.
+
+## Concurrency limits
+Every in-flight request is a separate agent process. AgentBridge refuses to run more than `AGENTBRIDGE_MAX_PROCS` agent processes at once (default 24, `0` disables the cap). Beyond that, requests fail fast with `RATE_LIMITED`, which the proxy answers as HTTP 429 with `retry-after`. The default request timeout is 300 seconds. When a client disconnects, the CLI and its child processes are killed.
 
 ## Limits (honest list)
 - Tool mode is buffered; emulated tool calls depend on the model. Usage is an estimate when the CLI had to be stopped early.

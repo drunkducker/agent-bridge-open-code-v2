@@ -3,6 +3,7 @@ import http from 'node:http';
 import { readFileSync, realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { timingSafeEqual } from 'node:crypto';
+import { listTrackedRuns } from '../telemetry/stats.js';
 import { HttpError, sendJson, listModels, disposeProxyScratch } from './common.js';
 import * as openai from './openai.js';
 import * as anthropic from './anthropic.js';
@@ -173,6 +174,12 @@ export async function startProxy(o: ProxyOptions = {}): Promise<RunningProxy> {
   });
   await new Promise<void>((ok, bad) => {
     server.once('error', bad);
+    // Per-request run records are only pruned when listed; trim them at startup so a proxy-only deployment cannot grow forever.
+    try {
+      listTrackedRuns(process.env, { limit: 0 });
+    } catch {
+      /* best-effort */
+    }
     server.listen(o.port ?? 0, host, () => ok());
   });
   port = (server.address() as any).port;
