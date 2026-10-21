@@ -1,0 +1,199 @@
+{
+  "date": "2026-10-21T23:10:00.697Z",
+  "model": "opencode/flint-40b-free",
+  "expected": {
+    "lote": "bba9bbf12378591a",
+    "quantidade_pagos": 4,
+    "total_centavos": 17081
+  },
+  "fixture": {
+    "lote": "bba9bbf12378591a",
+    "pedidos": [
+      {
+        "status": "pago",
+        "valor_centavos": 1327
+      },
+      {
+        "status": "cancelado",
+        "valor_centavos": 99999
+      },
+      {
+        "status": "pago",
+        "valor_centavos": 4890
+      },
+      {
+        "status": "pendente",
+        "valor_centavos": 7800
+      },
+      {
+        "status": "pago",
+        "valor_centavos": 2153
+      },
+      {
+        "status": "pago",
+        "valor_centavos": 8711
+      }
+    ]
+  },
+  "runs": [
+    {
+      "path": "exact-read-true-1",
+      "allowRead": true,
+      "freshServer": false,
+      "toolEvidence": [],
+      "text": "PONTE_OK",
+      "tool_calls": [],
+      "usage": {
+        "input": 1269,
+        "output": 4,
+        "reasoning": 0,
+        "cache": {
+          "read": 0,
+          "write": 0
+        }
+      },
+      "evidence": {
+        "assistantModels": [
+          {
+            "id": "flint-40b-free",
+            "providerID": "opencode",
+            "variant": "default"
+          }
+        ],
+        "outcome": "succeeded",
+        "errors": []
+      },
+      "correct": true,
+      "totalMs": 25154.978314
+    },
+    {
+      "path": "exact-read-false-1",
+      "allowRead": false,
+      "freshServer": false,
+      "toolEvidence": [],
+      "error": "OpenCode session failed: provider.auth,provider.auth",
+      "evidence": {
+        "assistantModels": [
+          {
+            "id": "flint-40b-free",
+            "providerID": "opencode",
+            "variant": "default"
+          }
+        ],
+        "outcome": "failed",
+        "errors": [
+          {
+            "type": "provider.auth",
+            "status": 403,
+            "message": "OpenCode's free tier can only be used from within OpenCode. Download it at https://opencode.ai and keep building."
+          },
+          {
+            "type": "provider.auth",
+            "status": 403,
+            "message": "OpenCode's free tier can only be used from within OpenCode. Download it at https://opencode.ai and keep building."
+          }
+        ]
+      },
+      "correct": false,
+      "totalMs": 31828.101165
+    },
+    {
+      "path": "exact-read-false-2",
+      "allowRead": false,
+      "freshServer": false,
+      "toolEvidence": [],
+      "error": "The operation was aborted due to timeout",
+      "correct": false,
+      "totalMs": 60017.309185
+    },
+    {
+      "path": "exact-read-true-2",
+      "allowRead": true,
+      "freshServer": false,
+      "toolEvidence": [],
+      "text": "## Conversation Summary\n\n## Objective\n- No substantive task was discussed; the conversation so far consists only of a user instruction to respond exactly with \"PONTE_OK\" and not execute any tool.\n\n## Requirements\n- Respond exactly with: PONTE_OK (user's literal instruction).\n- Do not execute any tool (user's literal instruction).\n\n## Decisions\n- (none)\n\n## Work State\n### Completed\n- (none)\n\n### Active\n- (none)\n\n### Blocked\n- (none)\n\n## Next Move\n1. (none)\n\n## Relevant Files\n- (none)\n\n## Important Context\n- The only user message was: \"Responda exatamente: PONTE_OK. Não execute nenhuma ferramenta.\"\n- No assistant actions, tool calls, or prior conversation context occurred before this point.\n- The harness subsequently injected instructions requiring a structured conversation summary to be produced instead of a plain reply.\n\n## Important Context (continued)\n- Conflict noted: the user's direct instruction to reply exactly \"PONTE_OK\" and not use any tool versus the harness's latest instruction to return only the structured summary format. The structured summary format takes precedence per the most recent system-level instruction.",
+      "tool_calls": [],
+      "usage": {
+        "input": 1203,
+        "output": 509,
+        "reasoning": 0,
+        "cache": {
+          "read": 384,
+          "write": 0
+        }
+      },
+      "evidence": {
+        "assistantModels": [
+          {
+            "id": "flint-40b-free",
+            "providerID": "opencode",
+            "variant": "default"
+          }
+        ],
+        "outcome": "succeeded",
+        "errors": []
+      },
+      "correct": false,
+      "totalMs": 10752.859236000004
+    },
+    {
+      "path": "warm-server-file",
+      "allowRead": true,
+      "freshServer": false,
+      "toolEvidence": [
+        {
+          "name": "read",
+          "status": "completed",
+          "containsFixtureMarker": true
+        }
+      ],
+      "text": "{\"lote\": \"bba9bbf12378591a\", \"quantidade_pagos\": 4, \"total_centavos\": 17081}",
+      "tool_calls": [],
+      "usage": {
+        "input": 667,
+        "output": 441,
+        "reasoning": 0,
+        "cache": {
+          "read": 1280,
+          "write": 0
+        }
+      },
+      "evidence": {
+        "assistantModels": [
+          {
+            "id": "flint-40b-free",
+            "providerID": "opencode",
+            "variant": "default"
+          },
+          {
+            "id": "flint-40b-free",
+            "providerID": "opencode",
+            "variant": "default"
+          }
+        ],
+        "outcome": "succeeded",
+        "errors": []
+      },
+      "strictJson": true,
+      "semanticCorrect": true,
+      "diskReadObserved": true,
+      "correct": true,
+      "totalMs": 40020.845214999994
+    },
+    {
+      "path": "fresh-server-file",
+      "allowRead": true,
+      "freshServer": true,
+      "toolEvidence": [],
+      "serverStartupMs": 224.18399900000077,
+      "error": "The operation was aborted due to timeout",
+      "correct": false,
+      "totalMs": 60427.678468
+    }
+  ],
+  "note": "Native OpenCode v2 API. Fresh session for every case. Same explicit model; no fallback. Compare correctness before timing.",
+  "warmServerStartupMs": 241.926365,
+  "fixtureUnchanged": true,
+  "fixtureSha256": "f6755178e047de9b3cefa8b8da3fc5ace1eb911aaabbe429d7a8e6a37da590ad",
+  "temporaryWorkspaceRemoved": true
+}

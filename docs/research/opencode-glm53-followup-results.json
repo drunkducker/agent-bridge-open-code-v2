@@ -1,0 +1,302 @@
+{
+  "date": "2026-10-21T23:21:42.082Z",
+  "model": "opencode/glm-5.3-flash-free",
+  "expected": {
+    "lote": "916eadd1651a6e04",
+    "quantidade_pagos": 4,
+    "total_centavos": 17081
+  },
+  "fixture": {
+    "lote": "916eadd1651a6e04",
+    "pedidos": [
+      {
+        "status": "pago",
+        "valor_centavos": 1327
+      },
+      {
+        "status": "cancelado",
+        "valor_centavos": 99999
+      },
+      {
+        "status": "pago",
+        "valor_centavos": 4890
+      },
+      {
+        "status": "pendente",
+        "valor_centavos": 7800
+      },
+      {
+        "status": "pago",
+        "valor_centavos": 2153
+      },
+      {
+        "status": "pago",
+        "valor_centavos": 8711
+      }
+    ]
+  },
+  "runs": [
+    {
+      "path": "exact-read-true-1",
+      "allowRead": true,
+      "freshServer": false,
+      "toolEvidence": [],
+      "text": "PONTE_OK",
+      "tool_calls": [],
+      "usage": {
+        "input": 1300,
+        "output": 6,
+        "reasoning": 17,
+        "cache": {
+          "read": 0,
+          "write": 0
+        }
+      },
+      "evidence": {
+        "assistantModels": [
+          {
+            "id": "glm-5.3-flash-free",
+            "providerID": "opencode",
+            "variant": "default"
+          }
+        ],
+        "assistantAgents": [
+          {
+            "agent": "build",
+            "finish": "stop"
+          }
+        ],
+        "outcome": "succeeded",
+        "errors": []
+      },
+      "correct": true,
+      "totalMs": 5801.964363
+    },
+    {
+      "path": "exact-read-false-1",
+      "allowRead": false,
+      "freshServer": false,
+      "toolEvidence": [],
+      "error": "OpenCode session failed: provider.auth,provider.auth",
+      "evidence": {
+        "assistantModels": [
+          {
+            "id": "glm-5.3-flash-free",
+            "providerID": "opencode",
+            "variant": "default"
+          }
+        ],
+        "assistantAgents": [
+          {
+            "agent": "build",
+            "finish": "error",
+            "errorType": "provider.auth"
+          }
+        ],
+        "outcome": "failed",
+        "errors": [
+          {
+            "type": "provider.auth",
+            "status": 403,
+            "message": "OpenCode's free tier can only be used from within OpenCode. Download it at https://opencode.ai and keep building."
+          },
+          {
+            "type": "provider.auth",
+            "status": 403,
+            "message": "OpenCode's free tier can only be used from within OpenCode. Download it at https://opencode.ai and keep building."
+          }
+        ]
+      },
+      "correct": false,
+      "totalMs": 4026.531854
+    },
+    {
+      "path": "exact-read-false-2",
+      "allowRead": false,
+      "freshServer": false,
+      "toolEvidence": [],
+      "error": "OpenCode session failed: provider.auth,provider.auth",
+      "evidence": {
+        "assistantModels": [
+          {
+            "id": "glm-5.3-flash-free",
+            "providerID": "opencode",
+            "variant": "default"
+          }
+        ],
+        "assistantAgents": [
+          {
+            "agent": "build",
+            "finish": "error",
+            "errorType": "provider.auth"
+          }
+        ],
+        "outcome": "failed",
+        "errors": [
+          {
+            "type": "provider.auth",
+            "status": 403,
+            "message": "OpenCode's free tier can only be used from within OpenCode. Download it at https://opencode.ai and keep building."
+          },
+          {
+            "type": "provider.auth",
+            "status": 403,
+            "message": "OpenCode's free tier can only be used from within OpenCode. Download it at https://opencode.ai and keep building."
+          }
+        ]
+      },
+      "correct": false,
+      "totalMs": 5486.907611999999
+    },
+    {
+      "path": "exact-read-true-2",
+      "allowRead": true,
+      "freshServer": false,
+      "toolEvidence": [],
+      "text": "PONTE_OK",
+      "tool_calls": [],
+      "usage": {
+        "input": 1548,
+        "output": 50,
+        "reasoning": 0,
+        "cache": {
+          "read": 0,
+          "write": 0
+        }
+      },
+      "evidence": {
+        "assistantModels": [
+          {
+            "id": "glm-5.3-flash-free",
+            "providerID": "opencode",
+            "variant": "default"
+          }
+        ],
+        "assistantAgents": [
+          {
+            "agent": "build",
+            "finish": "stop"
+          }
+        ],
+        "outcome": "succeeded",
+        "errors": []
+      },
+      "correct": true,
+      "totalMs": 2592.0341430000008
+    },
+    {
+      "path": "warm-server-file",
+      "allowRead": true,
+      "freshServer": false,
+      "toolEvidence": [
+        {
+          "name": "read",
+          "status": "completed",
+          "containsFixtureMarker": true
+        }
+      ],
+      "text": "{\"lote\": \"916eadd1651a6e04\", \"quantidade_pagos\": 4, \"total_centavos\": 17081}",
+      "tool_calls": [],
+      "usage": {
+        "input": 1864,
+        "output": 37,
+        "reasoning": 35,
+        "cache": {
+          "read": 0,
+          "write": 0
+        }
+      },
+      "evidence": {
+        "assistantModels": [
+          {
+            "id": "glm-5.3-flash-free",
+            "providerID": "opencode",
+            "variant": "default"
+          },
+          {
+            "id": "glm-5.3-flash-free",
+            "providerID": "opencode",
+            "variant": "default"
+          }
+        ],
+        "assistantAgents": [
+          {
+            "agent": "build",
+            "finish": "tool-calls"
+          },
+          {
+            "agent": "build",
+            "finish": "stop"
+          }
+        ],
+        "outcome": "succeeded",
+        "errors": []
+      },
+      "strictJson": true,
+      "semanticCorrect": true,
+      "diskReadObserved": true,
+      "correct": true,
+      "totalMs": 13609.035196
+    },
+    {
+      "path": "fresh-server-file",
+      "allowRead": true,
+      "freshServer": true,
+      "toolEvidence": [
+        {
+          "name": "read",
+          "status": "completed",
+          "containsFixtureMarker": true
+        }
+      ],
+      "serverStartupMs": 210.04836499999874,
+      "text": "{\"lote\": \"916eadd1651a6e04\", \"quantidade_pagos\": 4, \"total_centavos\": 17081}",
+      "tool_calls": [],
+      "usage": {
+        "input": 1871,
+        "output": 37,
+        "reasoning": 14,
+        "cache": {
+          "read": 0,
+          "write": 0
+        }
+      },
+      "evidence": {
+        "assistantModels": [
+          {
+            "id": "glm-5.3-flash-free",
+            "providerID": "opencode",
+            "variant": "default"
+          },
+          {
+            "id": "glm-5.3-flash-free",
+            "providerID": "opencode",
+            "variant": "default"
+          }
+        ],
+        "assistantAgents": [
+          {
+            "agent": "build",
+            "finish": "tool-calls"
+          },
+          {
+            "agent": "build",
+            "finish": "stop"
+          }
+        ],
+        "outcome": "succeeded",
+        "errors": []
+      },
+      "strictJson": true,
+      "semanticCorrect": true,
+      "diskReadObserved": true,
+      "correct": true,
+      "totalMs": 22548.529708000002
+    }
+  ],
+  "note": "Native OpenCode v2 API. Fresh session for every case. Same explicit model; no fallback. Compare correctness before timing.",
+  "warmServerStartupMs": 241.93316800000002,
+  "fixtureUnchanged": true,
+  "fixtureSha256": "d96bacb1882dbfd3524b95e5bd7be520d04f257e9f0c8f79b79d3ccbb1fcebfd",
+  "temporaryWorkspaceRemoved": true
+}

@@ -33,7 +33,7 @@ AgentBridge is a unified hub and orchestration bridge that connects every coding
 
 ### Key Capabilities:
 1. **Zero API Keys Needed:** Drives your locally installed agent CLIs (`claude`, `codex`, `opencode`, `agy`, `pi`) using the user's existing consumer/subscription logins (ChatGPT Plus/Pro, Claude Pro/Team/Max, etc.).
-2. **Agent-to-Agent Delegation (MCP Bridge):** Any agent can spawn and control any other agent as a subagent (`ask_codex`, `ask_claude`, `ask_pi`, `ask_ollama`, etc.).
+2. **Agent-to-Agent Delegation (MCP Bridge):** Any agent can spawn and control any other agent as a subagent (`ask_codex`, `ask_claude`, `ask_pi`, `ask_cursor`, `ask_ollama`, etc.).
 3. **OpenAI & Anthropic Compatible Proxy (`ab serve`):** Serves local subscriptions as an HTTP API on `http://127.0.0.1:8787/v1` for BYOK (Bring Your Own Key) apps and frameworks (GEPA, Cursor, LibreChat).
 4. **Resilience & Fallbacks:** Automatic detection of rate limits / quota lockouts (`RATE_LIMITED`) and automatic handover to fallback agents.
 5. **Git Checkpoints:** Non-destructive snapshots in hidden git refs (`refs/agentbridge/checkpoints/...`) for 1-second rollbacks of modified and untracked files.
@@ -46,7 +46,7 @@ AgentBridge is a unified hub and orchestration bridge that connects every coding
 
 | Command | What it does | When to run it |
 |---|---|---|
-| `ab doctor` | Probes all installed CLIs, logins, and endpoints | First diagnostic step if a delegation fails |
+| `ab doctor` | Probes every built-in agent CLI and configured endpoint; missing ones are `[skip]` (optional), exit 1 only on real problems or if nothing is usable | First diagnostic step if a delegation fails |
 | `ab doctor --live` | Probes CLIs and performs a real live test ping on each | Verify that tokens and accounts are currently working |
 | `ab ask <agent> "<prompt>"` | Executes a synchronous run on `<agent>` and prints the output | Quick second opinion or targeted subtask |
 | `ab run <agent> "<prompt>" --stream` | Runs `<agent>` streaming live tokens and tool events | Interactive or detailed executions |
@@ -76,16 +76,19 @@ AgentBridge is a unified hub and orchestration bridge that connects every coding
 When the user or another agent asks you to delegate work, use the `agentbridge` MCP tools:
 
 ### Available Tools:
-- **`ask_<agent>(prompt, model?, effort?, permissions?, cwd?, timeoutSeconds?, transport?, mcpPassthrough?, skills?, subdelegation?)`**:
+- **`ask_<agent>(prompt, model?, effort?, permissions?, cwd?, timeoutSeconds?, session?, systemPrompt?, fallback?, fallbackOn?, quotaPolicy?, transport?, harness?, offline?, mcpPassthrough?, skills?, subdelegation?, yolo?, dangerouslySkipPermissions?)`**:
   Synchronous call for short bounded tasks. `subdelegation` defaults to `true`; set it to `false` to prevent the child from spawning further AgentBridge runs.
-  Available agents: `ask_claude`, `ask_codex`, `ask_opencode`, `ask_agy`, `ask_pi`, `ask_ollama` (and any custom endpoints).
+  Available agents: `ask_claude`, `ask_codex`, `ask_opencode`, `ask_agy`, `ask_pi`, `ask_cursor`, `ask_grok`, `ask_gemini`, `ask_devin`, `ask_acp`, `ask_ollama` (and `ask_<name>` for any custom endpoint). `harness` (`auto|claude|pi|none`) only matters for HTTP endpoints; `offline: true` blocks network tools and MCP passthrough.
   - Use `transport: "app-server"` for Codex to run a persistent warm JSON-RPC daemon (zero cold start, real-time approval handling).
-- **`dispatch_<agent>(prompt, ..., subdelegation?)`**:
-  Asynchronous dispatch. Returns a `runId` immediately. `subdelegation` defaults to `true`; set it to `false` to prevent the child from spawning further AgentBridge runs.
+- **`dispatch_<agent>(prompt, ..., idempotencyKey?, subdelegation?)`**:
+  Asynchronous dispatch. Returns a `runId` immediately. Repeating a dispatch with the same `idempotencyKey` returns the existing run instead of starting a second one. `subdelegation` defaults to `true`; set it to `false` to prevent the child from spawning further AgentBridge runs.
 - **`wait_run(id, timeoutSeconds?)`**:
   Waits up to 30 seconds per call (larger requested waits are capped); a wait timeout leaves the run active. Continue polling until its structured state is terminal.
 - **`check_run(id)`**:
   Polls progress, status, tokens, and recent events of an async run.
+- **`list_runs(state?, limit?)`**: lists async run records from the registry (ids, states).
+- **`retain_run(id)`** / **`release_run(id)`**: exempt a run record from garbage collection (e.g. while a worker still needs its result) and release it again.
+- **`check_quota(agent, model?, ...)`**: reads measured remaining quota before you pick a route (see Quota below).
 - **`cancel_run(id)`**:
   Kills the child agent process (or cleanly cancels active turn in `app-server` mode).
 - **`checkpoint_create(message, cwd?)`**, **`checkpoint_list(cwd?)`**, **`checkpoint_diff(id, cwd?)`** & **`checkpoint_rollback(id, cwd?)`**:

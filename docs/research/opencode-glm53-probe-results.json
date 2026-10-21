@@ -1,0 +1,66 @@
+{
+  "date": "2026-10-21T23:23:25.375Z",
+  "model": "opencode/glm-5.3-flash-free",
+  "probes": [
+    {
+      "path": "agentbridge-current-api-exact",
+      "error": "AgentBridge HTTP 401: agent_not_logged_in",
+      "evidence": {
+        "status": 401,
+        "code": "agent_not_logged_in",
+        "type": "authentication_error"
+      },
+      "correct": false,
+      "totalMs": 30.994185
+    },
+    {
+      "path": "v2-generate-exact-1",
+      "error": "OpenCode v2 HTTP 503: ServiceUnavailableError",
+      "evidence": {
+        "status": 503,
+        "type": "ServiceUnavailableError",
+        "message": "OpenCode's free tier can only be used from within OpenCode. Download it at https://opencode.ai and keep building."
+      },
+      "correct": false,
+      "totalMs": 780.043681
+    },
+    {
+      "path": "v2-generate-exact-2",
+      "error": "OpenCode v2 HTTP 503: ServiceUnavailableError",
+      "evidence": {
+        "status": 503,
+        "type": "ServiceUnavailableError",
+        "message": "OpenCode's free tier can only be used from within OpenCode. Download it at https://opencode.ai and keep building."
+      },
+      "correct": false,
+      "totalMs": 186.56270200000017
+    }
+  ],
+  "note": "No new login or provider key. One-shot generation uses the installed OpenCode server, not a direct remote provider request.",
+  "version": "2.1.2",
+  "serverStartupMs": 218.46074000000002,
+  "modelInfo": {
+    "id": "glm-5.3-flash-free",
+    "providerID": "opencode",
+    "name": "GLM-5.3-Flash Free",
+    "enabled": true,
+    "capabilities": {
+      "tools": true,
+      "input": [
+        "text",
+        "image",
+        "video",
+        "pdf"
+      ],
+      "output": [
+        "text"
+      ],
+      "temperature": true
+    },
+    "limit": {
+      "context": 200000,
+      "output": 32000
+    }
+  },
+  "temporaryWorkspaceRemoved": true
+}

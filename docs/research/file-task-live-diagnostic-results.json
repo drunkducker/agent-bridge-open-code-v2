@@ -1,0 +1,138 @@
+{
+  "date": "2026-10-21T22:40:59.888Z",
+  "model": "gpt-6.1-sol",
+  "effort": "low",
+  "task": "Leia o arquivo pedidos.json do diretório de trabalho usando uma ferramenta. Não altere arquivos. Considere apenas pedidos com status exatamente \"pago\". Responda somente um objeto JSON com lote (copiado do arquivo), quantidade_pagos e total_centavos (soma dos valores dos pagos). Não leia outros arquivos nem consulte serviços externos. Se não tiver nenhuma ferramenta para ler o arquivo, responda exatamente {\"error\":\"FILE_ACCESS_UNAVAILABLE\"}.",
+  "fixture": {
+    "lote": "ef05e3c182ef7c45",
+    "pedidos": [
+      {
+        "id": 1,
+        "status": "pago",
+        "valor_centavos": 1327
+      },
+      {
+        "id": 2,
+        "status": "cancelado",
+        "valor_centavos": 99999
+      },
+      {
+        "id": 3,
+        "status": "pago",
+        "valor_centavos": 4890
+      },
+      {
+        "id": 4,
+        "status": "pendente",
+        "valor_centavos": 7800
+      },
+      {
+        "id": 5,
+        "status": "pago",
+        "valor_centavos": 2153
+      },
+      {
+        "id": 6,
+        "status": "pago",
+        "valor_centavos": 8711
+      },
+      {
+        "id": 7,
+        "status": "cancelado",
+        "valor_centavos": 4500
+      }
+    ]
+  },
+  "expected": {
+    "lote": "ef05e3c182ef7c45",
+    "quantidade_pagos": 4,
+    "total_centavos": 17081
+  },
+  "runs": [
+    {
+      "path": "agent-cli",
+      "modelCalls": 1,
+      "clientReads": 0,
+      "text": "{\"lote\":\"ef05e3c182ef7c45\",\"quantidade_pagos\":4,\"total_centavos\":17081}",
+      "nativeTools": [
+        {
+          "name": "shell",
+          "command": "/usr/bin/zsh -lc 'cat pedidos.json'",
+          "containsFixtureMarker": true,
+          "exitCode": 0
+        }
+      ],
+      "answerCorrect": true,
+      "diskReadObserved": true,
+      "correct": true,
+      "totalMs": 8046.840628
+    },
+    {
+      "path": "agent-app-server",
+      "modelCalls": 1,
+      "clientReads": 0,
+      "text": "{\"lote\":\"ef05e3c182ef7c45\",\"quantidade_pagos\":4,\"total_centavos\":17081}",
+      "nativeTools": [
+        {
+          "name": "raw-command",
+          "itemType": "commandExecution",
+          "command": "/usr/bin/zsh -lc 'cat pedidos.json'",
+          "containsFixtureMarker": true,
+          "exitCode": 0
+        }
+      ],
+      "answerCorrect": true,
+      "diskReadObserved": true,
+      "correct": true,
+      "totalMs": 7288.772299
+    },
+    {
+      "path": "api-cli-client-tool",
+      "modelCalls": 1,
+      "clientReads": 0,
+      "text": "{\"error\":\"FILE_ACCESS_UNAVAILABLE\"}",
+      "nativeTools": [],
+      "answerCorrect": false,
+      "diskReadObserved": false,
+      "correct": false,
+      "totalMs": 6323.200005000001
+    },
+    {
+      "path": "api-cli-client-tool-required",
+      "modelCalls": 2,
+      "clientReads": 1,
+      "text": "{\"lote\":\"ef05e3c182ef7c45\",\"quantidade_pagos\":4,\"total_centavos\":17081}",
+      "nativeTools": [],
+      "answerCorrect": true,
+      "diskReadObserved": true,
+      "correct": true,
+      "totalMs": 11640.465654000003
+    },
+    {
+      "path": "direct-client-tool",
+      "modelCalls": 2,
+      "clientReads": 1,
+      "text": "{\"lote\":\"ef05e3c182ef7c45\",\"quantidade_pagos\":4,\"total_centavos\":17081}",
+      "nativeTools": [],
+      "answerCorrect": true,
+      "diskReadObserved": true,
+      "correct": true,
+      "totalMs": 3934.558115
+    },
+    {
+      "path": "direct-without-tools",
+      "modelCalls": 1,
+      "clientReads": 0,
+      "text": "{\"error\":\"FILE_ACCESS_UNAVAILABLE\"}",
+      "nativeTools": [],
+      "answerCorrect": true,
+      "diskReadObserved": false,
+      "correct": true,
+      "totalMs": 1550.854956999996
+    }
+  ],
+  "note": "One run per path; real disk read, same file contents. Native agents read a worktree copy. Direct/API client-tool execution is provided by this script.",
+  "sourceFileUnchanged": true,
+  "fixtureSha256": "0608bb522fa5d7485dff932971932b2e8274e9d474924a7a9ed5b52054a79a2a",
+  "temporaryWorkspaceRemoved": true
+}

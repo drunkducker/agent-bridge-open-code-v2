@@ -1,0 +1,40 @@
+{
+  "installedVersion": "opencode v2.1.1",
+  "probes": [
+    {
+      "path": "/global/health",
+      "responseKind": "string",
+      "looksLikeHtml": true
+    },
+    {
+      "path": "/config/providers",
+      "responseKind": "string",
+      "looksLikeHtml": true
+    },
+    {
+      "path": "/session",
+      "responseKind": "string",
+      "looksLikeHtml": true
+    }
+  ],
+  "cliPreliminaryTests": [
+    {
+      "path": "native-cli-standalone",
+      "model": "opencode/flint-40b-free",
+      "exitCode": 1,
+      "errorType": "compaction.unavailable",
+      "message": "Nothing to compact yet"
+    },
+    {
+      "path": "native-cli-existing-service",
+      "model": "opencode/flint-40b-free",
+      "exitCode": 1,
+      "errorType": "compaction.unavailable",
+      "message": "Nothing to compact yet"
+    }
+  ],
+  "modelVerbose": {
+    "supported": false,
+    "error": "Unrecognized flag: --verbose"
+  }
+}

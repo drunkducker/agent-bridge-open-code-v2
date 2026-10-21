@@ -1,0 +1,185 @@
+{
+  "date": "2026-10-21T23:08:11.280Z",
+  "installedVersion": "opencode v2.1.1",
+  "model": "opencode/flint-40b-free",
+  "fixture": {
+    "lote": "a8e090f4f102021b",
+    "pedidos": [
+      {
+        "status": "pago",
+        "valor_centavos": 1327
+      },
+      {
+        "status": "cancelado",
+        "valor_centavos": 99999
+      },
+      {
+        "status": "pago",
+        "valor_centavos": 4890
+      },
+      {
+        "status": "pendente",
+        "valor_centavos": 7800
+      },
+      {
+        "status": "pago",
+        "valor_centavos": 2153
+      },
+      {
+        "status": "pago",
+        "valor_centavos": 8711
+      }
+    ]
+  },
+  "expected": {
+    "lote": "a8e090f4f102021b",
+    "quantidade_pagos": 4,
+    "total_centavos": 17081
+  },
+  "task": "Leia pedidos.json do diretório de trabalho usando a ferramenta read. Não altere arquivos, não execute comandos e não consulte outros arquivos ou serviços. Some valor_centavos somente de status exatamente \"pago\". Responda somente JSON com lote (copiado do arquivo), quantidade_pagos e total_centavos.",
+  "probes": [
+    {
+      "path": "agentbridge-current-api-exact",
+      "error": "AgentBridge HTTP 401: agent_not_logged_in",
+      "evidence": {
+        "status": 401,
+        "code": "agent_not_logged_in",
+        "type": "authentication_error"
+      },
+      "correct": false,
+      "totalMs": 39.158818
+    },
+    {
+      "path": "v2-generate-exact-1",
+      "error": "OpenCode v2 HTTP 503: ServiceUnavailableError",
+      "evidence": {
+        "status": 503,
+        "type": "ServiceUnavailableError",
+        "message": "OpenCode's free tier can only be used from within OpenCode. Download it at https://opencode.ai and keep building."
+      },
+      "correct": false,
+      "totalMs": 730.5065709999999
+    },
+    {
+      "path": "v2-generate-exact-2",
+      "error": "OpenCode v2 HTTP 503: ServiceUnavailableError",
+      "evidence": {
+        "status": 503,
+        "type": "ServiceUnavailableError",
+        "message": "OpenCode's free tier can only be used from within OpenCode. Download it at https://opencode.ai and keep building."
+      },
+      "correct": false,
+      "totalMs": 175.84820499999978
+    },
+    {
+      "path": "v2-native-session-exact",
+      "error": "OpenCode session failed: provider.auth,provider.auth",
+      "evidence": {
+        "assistantModels": [
+          {
+            "id": "flint-40b-free",
+            "providerID": "opencode",
+            "variant": "default"
+          }
+        ],
+        "outcome": "failed",
+        "errors": [
+          {
+            "type": "provider.auth",
+            "status": 403,
+            "message": "OpenCode's free tier can only be used from within OpenCode. Download it at https://opencode.ai and keep building."
+          },
+          {
+            "type": "provider.auth",
+            "status": 403,
+            "message": "OpenCode's free tier can only be used from within OpenCode. Download it at https://opencode.ai and keep building."
+          }
+        ]
+      },
+      "correct": false,
+      "totalMs": 28542.141096
+    },
+    {
+      "path": "v2-native-session-file",
+      "text": "```json\n{\n  \"lote\": \"a8e090f4f102021b\",\n  \"quantidade_pagos\": 4,\n  \"total_centavos\": 17081\n}\n```",
+      "tool_calls": [],
+      "usage": {
+        "input": 616,
+        "output": 131,
+        "reasoning": 0,
+        "cache": {
+          "read": 1280,
+          "write": 0
+        }
+      },
+      "evidence": {
+        "assistantModels": [
+          {
+            "id": "flint-40b-free",
+            "providerID": "opencode",
+            "variant": "default"
+          },
+          {
+            "id": "flint-40b-free",
+            "providerID": "opencode",
+            "variant": "default"
+          }
+        ],
+        "outcome": "succeeded",
+        "errors": []
+      },
+      "toolEvidence": [
+        {
+          "name": "read",
+          "status": "completed",
+          "containsFixtureMarker": true
+        }
+      ],
+      "correct": false,
+      "totalMs": 16125.945295999998
+    }
+  ],
+  "skipped": [
+    {
+      "paths": [
+        "experimental-v2-api-file-auto",
+        "experimental-v2-api-file-required",
+        "latency-benchmark",
+        "concurrency-and-cancellation"
+      ],
+      "reason": "Flint did not complete basic generation through OpenCode v2; model-dependent downstream tests cannot establish capabilities."
+    }
+  ],
+  "references": [
+    "https://opencode.ai/v2/docs/api",
+    "https://opencode.ai/v2/openapi.json"
+  ],
+  "note": "Local v2 server is still OpenCode, not a direct connection to the remote model provider. Failure durations are not inference benchmarks.",
+  "privateServer": {
+    "version": "2.1.1",
+    "startupMs": 238.89420299999998
+  },
+  "modelInfo": {
+    "id": "flint-40b-free",
+    "providerID": "opencode",
+    "name": "Flint 40B Free",
+    "enabled": true,
+    "capabilities": {
+      "tools": true,
+      "input": [
+        "text"
+      ],
+      "output": [
+        "text"
+      ],
+      "temperature": true
+    },
+    "limit": {
+      "context": 262144,
+      "output": 65536
+    }
+  },
+  "fixtureUnchanged": true,
+  "fixtureSha256": "c6c1341b335242183d852f8fbc6cbd08f6a8ef7190f8dec0b09f1f4fd4397f83",
+  "temporaryWorkspaceRemoved": true
+}

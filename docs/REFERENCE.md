@@ -7,7 +7,7 @@ Drive the coding agents you already have installed — **Claude Code**, **Codex*
 agentbridge gives you:
 
 1. **A unified library and CLI** (`run`, `ask`, `fanout`, `race`) with the same options and the same event/result shapes for all ten built-in agents.
-2. **Agent-to-agent delegation.** Any agent can be a subagent of any other (all 10 built-in caller x callee pairs, plus HTTP endpoints) through a built-in MCP bridge server, with control over model, effort, permissions, working directory, timeout and session mode.
+2. **Agent-to-agent delegation.** Any agent can be a subagent of any other (any agent that can load MCP servers can call any built-in agent or HTTP endpoint) through a built-in MCP bridge server, with control over model, effort, permissions, working directory, timeout and session mode.
 3. **Plain HTTP model endpoints as agents**: **Ollama** (built in) or any OpenAI/Anthropic-compatible base URL (vLLM, LM Studio, LiteLLM, a remote gateway), usable from the CLI, the library and from inside Claude Code / Codex / OpenCode as `ask_<name>`.
 4. **One-command Claude Code integration**: `ab install claude` registers the bridge as an MCP server and writes relay subagents, so Claude Code subagents and **dynamic workflows** can call Codex, OpenCode and your Ollama models.
 5. **Telemetry and context management**: per-session context size, warn/compact/hard thresholds, automatic compaction, and cross-agent `handoff()`.
@@ -23,24 +23,38 @@ Plain Node ESM: a TypeScript source tree compiled to plain JavaScript in `dist/`
 
 - [Requirements](#requirements)
 - [Installation](#installation)
+- [Interactive Setup Wizard](#interactive-setup-wizard)
 - [Verify your setup](#verify-your-setup)
 - [Quick start](#quick-start)
 - [CLI reference](#cli-reference)
 - [Library API](#library-api)
   - [Run options](#run-options)
+  - [Permissions & Sandboxing Architecture: How Edits are Blocked vs Allowed](#permissions--sandboxing-architecture-how-edits-are-blocked-vs-allowed)
   - [Events and results](#events-and-results)
   - [Sessions](#sessions)
   - [Permissions and effort mapping](#permissions-and-effort-mapping)
+  - [Web Search, Tools, and Network Permissions Across Agents & Modes](#web-search-tools-and-network-permissions-across-agents--modes)
+  - [Execution Transports: CLI vs Persistent App-Server Mode](#execution-transports-cli-vs-persistent-app-server-mode)
   - [Errors](#errors)
 - [Parallel workflows: fanout and race](#parallel-workflows-fanout-and-race)
 - [Extras: schema, worktree, budget](#extras-schema-worktree-budget)
 - [Git hidden-ref checkpoints](#git-hidden-ref-checkpoints)
 - [Process supervision and anti-deadlock safeguards](#process-supervision-and-anti-deadlock-safeguards)
+- [MCP Delegation Results and Timeouts](#mcp-delegation-results-and-timeouts)
+- [Universal Open Agent Skills (.agents/skills) & Conflict Prevention](#universal-open-agent-skills-agentsskills--conflict-prevention)
+- [Multiple accounts and managed profiles (ab account)](#multiple-accounts-and-managed-profiles-ab-account)
+- [Configuration and safe permission defaults (ab config)](#configuration-and-safe-permission-defaults-ab-config)
+- [TDD auto-repair loop (ab fix)](#tdd-auto-repair-loop-ab-fix)
+- [Multi-agent review loop and consensus (ab review, ab ensemble)](#multi-agent-review-loop-and-consensus-ab-review-ab-ensemble)
+- [DAG pipeline task orchestrator (ab pipeline)](#dag-pipeline-task-orchestrator-ab-pipeline)
+- [Shared project memory (ab memory)](#shared-project-memory-ab-memory)
+- [Proactive quota probing (ab quota & check_quota MCP tool)](#proactive-quota-probing-ab-quota--check_quota-mcp-tool)
+- [Zero-friction IDE & CLI MCP installers (ab install <target>)](#zero-friction-ide--cli-mcp-installers-ab-install-target)
 - [New providers (Cursor, Grok, Gemini, Devin, ACP)](#new-providers-cursor-grok-gemini-devin-acp)
 - [Agents calling agents (the MCP bridge)](#agents-calling-agents-the-mcp-bridge)
-- [Antigravity CLI (`agy`)](#antigravity-cli-agy)
 - [pi](#pi)
 - [Rate limits and fallback](#rate-limits-and-fallback)
+- [Antigravity CLI (agy)](#antigravity-cli-agy)
 - [Using it from Claude Code (subagents and dynamic workflows)](#using-it-from-claude-code-subagents-and-dynamic-workflows)
 - [HTTP endpoints: Ollama and any base URL](#http-endpoints-ollama-and-any-base-url)
 - [Telemetry, context policy and handoff](#telemetry-context-policy-and-handoff)
@@ -52,6 +66,7 @@ Plain Node ESM: a TypeScript source tree compiled to plain JavaScript in `dist/`
 - [Project layout](#project-layout)
 - [Known limitations](#known-limitations)
 - [Troubleshooting](#troubleshooting)
+- [License](#license)
 
 ---
 
@@ -64,6 +79,8 @@ Plain Node ESM: a TypeScript source tree compiled to plain JavaScript in `dist/`
   - `opencode` (OpenCode)
   - `agy` (Antigravity CLI; the separate terminal CLI, not the IDE launcher)
   - `pi` (`npm i -g @earendil-works/pi-coding-agent`; any provider/model configured in pi)
+  - `cursor` (`cursor-agent`), `grok`, `gemini`, `devin`, or any Agent Client Protocol agent (`acp`; executable `acp-agent`)
+  - or an HTTP endpoint (Ollama, OpenRouter, any OpenAI/Anthropic-compatible base URL), which needs no CLI
 - `git` on your `PATH` (only needed for the `--worktree` option)
 
 agentbridge never asks for passwords or API keys and has no login flow of its own. It spawns the CLIs, which use their own local auth. It reads existing CLI login files only for quota measurement (Claude, Codex, Gemini OAuth), and `ab account add --copy-current` copies a CLI config directory, login files included, into a managed profile.
@@ -126,24 +143,30 @@ The wizard guides you through:
 7. **HTTP Endpoints:** Add local Ollama or OpenRouter.
 8. **Health Check:** Offers to run `ab doctor` immediately.
 
-Use `ab setup --yes` for non-interactive / scripted execution.
+Use `ab setup --yes` (or `--non-interactive`) for non-interactive / scripted execution. The same two flags apply to `ab install`, which otherwise prompts on a TTY.
 
 ## Verify your setup
 
 ```bash
-ab doctor            # checks CLIs, logins, models, Node version, git, cwd, proxy port
-ab doctor --live     # additionally makes a tiny real call to each agent
-ab doctor --json     # machine-readable
+ab doctor              # checks every built-in agent CLI and configured endpoint, Node version, git, cwd, proxy port
+ab doctor --live       # additionally makes a tiny real call to each installed agent
+ab doctor --no-models  # skip model discovery (faster)
+ab doctor --port 8788  # check this port instead of the default proxy port 8787
+ab doctor --json       # machine-readable
 ```
 
-Example output:
+`ab doctor` probes every entry of `BUILTIN_AGENTS` (`claude`, `codex`, `opencode`, `agy`, `pi`, `cursor`, `grok`, `gemini`, `devin`, `acp`) plus every configured endpoint (`ollama` and any `ab endpoint add` entry). Each agent is optional: a CLI that is not installed (or an endpoint nothing is listening on) is reported as `[skip]`, which is informational and never changes the exit code. The exit code is 1 only for real problems: Node older than 22, an installed agent whose `--live` call fails, or no usable agent at all (the `agents` check then says so). An installed CLI with no login found is a `[WARN]` and does not count as usable. With `--json`, `agents.<name>.installed` is `false` for a skipped agent, the check status can be `ok`, `warn`, `fail` or `skip`, and `usable` lists the agents that are installed/reachable and not known to be broken.
+
+Example output (versions vary):
 
 ```
-[ ok ] claude: 2.1.288 (Claude Code); logged in; 4 models
-[ ok ] codex: codex-cli 0.160.0; logged in; 8 models
-[ ok ] opencode: 1.18.31; logged in; 30 models
-[ ok ] agy: 1.2.16; login not checkable offline (use --live); 25 models
-[ ok ] node: v26.3.0 (need >= 22)
+[ ok ] agents: 3 usable: claude, codex, opencode
+[ ok ] claude: <version>; logged in (.credentials.json); 4 models
+[ ok ] codex: <version>; logged in (auth.json); 8 models
+[skip] cursor: not installed (optional)
+[ ok ] agy: <version>; login not checkable offline (use --live); 25 models
+[skip] ollama: endpoint http://127.0.0.1:11434/v1 not reachable (nothing listening; fine if you do not use it)
+[ ok ] node: v22.x (need >= 22)
 ```
 
 ## Quick start
@@ -201,32 +224,33 @@ ab run <agent> [prompt|-] [--model][--effort][--permissions][--cwd][--timeout s]
                            [--fallback a[@N][:model],...][--fallback-on RATE_LIMITED,TIMEOUT,...]
                            [--min-remaining-percent N][--wait-for-quota][--max-quota-wait seconds][--yolo]
                            [--harness auto|claude|pi|none][--dangerously-skip-permissions]
+                           [--offline][--isolated][--transport cli|app-server|stdio|auto][--app-server]
                            [--worktree][--max-cost][--max-tokens][--max-time s]
 ab ask <agent> [prompt|-] [same flags]           # prints only the result text
-ab fanout "<prompt>" agent[:model] ...           # run all, collect all
-ab race   "<prompt>" agent[:model] ...           # first accepted wins, rest cancelled
+ab fanout "<prompt>" agent[:model] ... [--agents a,b][--concurrency N]   # run all, collect all
+ab race   "<prompt>" agent[:model] ... [--agents a,b][--concurrency N]   # first accepted wins, rest cancelled
 ab fix <agent> "<test-cmd>" [--prompt p] [--max-attempts 3]  # TDD auto-repair loop with rollback
 ab review <coder> <reviewer> "<task>" [--max-turns 3]        # Multi-agent review loop with diffs
 ab ensemble "<task>" <a1> <a2> ... [--judge j]               # Multi-agent consensus voting & synthesis
 ab pipeline <pipeline.json> [--checkpoint-each][--auto-rollback]    # DAG task orchestrator with waves & rollback
 ab quota [agent] [--threshold %]                             # Proactive quota checking
-ab account list [agent] | add <agent> <name> [--copy-current][--login] | use <agent> <name> | remove <agent> <name> | quota
+ab account list [agent] | add <agent> <name> [--copy-current][--login] | use <agent> <name> | remove <agent> <name> [--purge|--delete-dir] | quota
 ab checkpoint create [message] | list | rollback <id> | diff <id>   # git hidden-ref snapshots
 ab memory add "<rule>" | decision "<topic>" "<decision>" [--agent a] | list [--json] | clear
 ab sessions [prune [--proxy] [--older-than 7d] [--dry-run]] | ab ps | ab top [--once] | ab stats
-ab ui [--port 8788] [--open] [--token t]       # live web dashboard & time-machine UI
+ab ui [--port 8788] [--host h] [--allow-non-loopback] [--open] [--token t]   # live web dashboard & time-machine UI
 ab context <session> [--agent a]
-ab handoff <session> --to <agent>
-ab watch <run> | ab wait <run> | ab cancel <run>
+ab handoff <session> --to <agent> [--agent source-agent][--no-seed]
+ab watch <run|session> [--timeout s] | ab wait <run|session> [--timeout s] | ab cancel <run>
 ab serve [--port][--host][--token][--allow-non-loopback][--fallback agent[@N][:model],...]
          [--session-ttl 7d|12h|0][--config file.json][--agent-root dir][--agent-max-permission read-only|plan|edit|full]
          [--agent-max-runs N (default 8, 0 = unlimited)][--agent-run-ttl minutes (default 30)][--log file.jsonl]
          [--min-remaining-percent N][--wait-for-quota][--max-quota-wait seconds][--accounts file.json --accept-tos-risk]
 ab bridge                                        # stdio MCP server
 ab sweep                                         # delete expired bridge run records; prints {total, removed}
-ab doctor [--live][--json]
-ab setup | ab wizard [--yes]
-ab install <claude|codex|opencode|agy|pi|cursor|vscode|zed|windsurf|claude-desktop|all> [--scope project|user] [--force]
+ab doctor [--live][--json][--no-models][--port N]
+ab setup | ab wizard [--yes|--non-interactive]
+ab install <claude|codex|opencode|agy|pi|cursor|vscode|zed|windsurf|claude-desktop|all> [--scope project|user] [--force][--yes|--non-interactive]
 ab endpoint [list] | add <name> <baseUrl> [--type openai|anthropic] [--model m] [--api-key-env VAR] | remove <name>
 ```
 
@@ -239,6 +263,15 @@ Notes:
 - Codex MCP server deadlines use its native `tool_timeout_sec` setting in seconds. `ab install codex --timeout N` writes that key; legacy `timeout` entries for AgentBridge are migrated when the installer updates the Codex config. Temporary HTTP bridges injected for Codex use 300 seconds.
 - `ab install claude` registers the MCP server, writes the relay subagents (`--no-agents` to skip) and installs the `agentbridge-delegate` skill under `.claude/skills/` (project/local scope) or `~/.claude/skills/` (user scope); `--no-skill` skips it. The skill teaches Claude when to delegate, which tool to use (`ask_*` vs `dispatch_*`), permissions, fallback and how to treat results. Source: `skills/agentbridge-delegate/SKILL.md`.
 - `<agent>` is a built-in (`claude`, `codex`, `opencode`, `agy`, `pi`, `cursor`, `grok`, `gemini`, `devin`, `acp`), `ollama` or any [endpoint](#http-endpoints-ollama-and-any-base-url) you configured. Targets for `fanout`/`race` can include a model: `claude:haiku`, `opencode:provider/model`.
+- Short flags: `-m` `--model`, `-e` `--effort`, `-h` `--help`, `-j` `--json`, `-s` `--stream`, `-w` `--worktree`, `-t` `--timeout`, `-C` `--cwd`, `-y` `--yes`.
+- `--isolated` runs the agent without your local config, plugins and slash commands where the CLI supports it; `--app-server` is shorthand for `--transport app-server` (Codex warm daemon, see [Execution Transports](#execution-transports-cli-vs-persistent-app-server-mode)); `--offline` disables network tools where the harness allows.
+- `--agents a,b` is an alternative to listing targets after the prompt for `fanout`/`race`; `--concurrency N` caps how many run at once.
+- `ab handoff` seeds the new session with a summary of the old one; pass `--no-seed` to start it empty.
+- `ab account remove ... --purge` (alias `--delete-dir`) also deletes the account's profile directory.
+- `ab install ... --ceiling <level>` sets the permission ceiling written to the bridge config (default `full`); `--non-interactive`/`--yes` skip prompts.
+- `ab wait` and `ab watch` accept a run id or a session id and give up after `--timeout` seconds (default 600); a timed-out wait prints `timed out` rather than failing the run.
+- `ab sweep` deletes expired bridge run records (see `AGENTBRIDGE_RUN_MAX_AGE_MS`) and prints `{total, removed}`.
+- `ab ui` binds to loopback; `--host` picks another interface and requires `--allow-non-loopback`, and it also reads `AGENTBRIDGE_TOKEN` when `--token` is not given.
 - Pass `-` as the prompt to read it from stdin.
 - `--json` prints the full Result as JSON; `--stream` prints text as it arrives.
 - `ab top` is a live view of active runs and sessions; `ab stats` prints persisted aggregates.
@@ -283,6 +316,18 @@ Everything is exported from the package root (`src/index.ts`, compiled to `dist/
 | `extraArgs` | string[] | Raw extra CLI arguments, passed through |
 | `isolated` | boolean | Run the agent without your local config/plugins/slash commands where supported |
 | `harness` | `auto\|claude\|pi\|none` | Execution harness for HTTP endpoints (Ollama, OpenRouter, etc.). Default `auto`. |
+| `offline` | boolean | Disable network tools where the harness allows; also disables MCP passthrough |
+| `fallback` | `Array<string \| {agent, model?, minRemainingPercent?}>` | Agents to try next on failure, see [Rate limits and fallback](#rate-limits-and-fallback) |
+| `fallbackOn` | error codes | Which codes trigger the fallback chain (default `RATE_LIMITED`) |
+| `quotaPolicy` | `{minRemainingPercent, waitForReset?, maxWaitMs?}` | Proactive quota gate, see [Proactive quota probing](#proactive-quota-probing-ab-quota--check_quota-mcp-tool) |
+| `transport` / `appServer` | `cli\|app-server\|stdio\|auto` / boolean | Execution transport (Codex warm app-server daemon); `appServer: true` is shorthand for `transport: 'app-server'` |
+| `yolo` | boolean | Codex only; requires `permissions: 'full'` |
+| `dangerouslySkipPermissions` | boolean | Claude only; requires `permissions: 'full'`, rejected as root |
+| `skills` | boolean | Let the child agent see Open Agent Skills (also `AGENTBRIDGE_ENABLE_SKILLS=1`) |
+| `mcpPassthrough` | string[] | Host MCP servers the child may use; a subset of the `AGENTBRIDGE_MCP_PASSTHROUGH` ceiling |
+| `images` | `{mediaType, data}[]` (max 8) | Base64 image attachments (`image/png\|jpeg\|gif\|webp`) for agents that accept them |
+| `writableRoots` | string[] | Codex: extra directories writable under `edit` besides `cwd` |
+| `defaultPermissions` | boolean | Internal: the permission level came from the configured default, not from the caller |
 
 Unknown options raise `BAD_OPTION`. Anything an agent cannot do raises `BAD_OPTION` as well; options are never silently ignored.
 
@@ -355,9 +400,11 @@ Events yielded by `run()`:
 {type:'text', delta}
 {type:'thinking', delta}
 {type:'tool', name, input, output?}
-{type:'usage', input, output, cost?, incremental?}
+{type:'usage', input, output, cost?, incremental?}    // incremental:true = deltas to add; otherwise a snapshot
 {type:'error', message}
 {type:'raw', data}
+{type:'fallback', from, to, code, message}                 // a failed attempt is being retried on the next agent of options.fallback
+{type:'quota', phase:'waiting'|'ready'|'skipped', agent, message, threshold, remainingPercent?, resetAt?, nextCheckAt?, candidates?}
 ```
 
 Result:
@@ -516,7 +563,7 @@ Your MCP servers and skills work seamlessly and identically across **both** batc
 
 All failures throw `AgentError` with a `code`:
 
-`NOT_INSTALLED`, `NOT_LOGGED_IN`, `TIMEOUT`, `ABORTED`, `BAD_OPTION`, `AGENT_FAILED`.
+`NOT_INSTALLED`, `NOT_LOGGED_IN`, `TIMEOUT`, `ABORTED`, `BAD_OPTION`, `AGENT_FAILED`, `RATE_LIMITED` (seven codes, defined in `src/core/errors.ts`). `RATE_LIMITED` means the provider throttled or exhausted the quota (HTTP 429/529, "usage limit", ...), optionally with `retryAfterMs`; it is the default trigger of `fallback`, and the bridge/proxy also use it when the process cap is hit.
 
 ```js
 try { await ask('codex', { prompt: 'hi', timeoutMs: 5000 }); }
@@ -990,7 +1037,7 @@ AgentBridge supports an extended roster of modern AI agents and protocols. Curre
 | **Cursor CLI** | `cursor` | `cursor-agent --print ...` | `auto`, `gpt-5.3-codex`, `claude-opus-4-8-thinking-high-fast`, `grok-4.7` |
 | **xAI Grok** | `grok` | `grok ...` | `grok-4.7`, `grok-4`, `grok-3` |
 | **Google Gemini CLI** | `gemini` | `gemini ...` | `gemini-3.5-flash`, `gemini-3-pro-preview`, `gemini-3.1-flash-lite`, `gemini-2.5-flash`, `gemini-2.5-pro` |
-| **Devin CLI** | `devin` | `devin run ...` | `default`, `devin-default` |
+| **Devin CLI** | `devin` | `devin --permission-mode normal\|dangerous -p -- <prompt>` | `devin-default` (used when no `--model` is given; `default` is also listed) |
 | **Generic ACP** | `acp` | Configurable ACP stdio | Agent Client Protocol JSON-RPC 2.0 |
 
 
@@ -1375,7 +1422,7 @@ The full guide, with the checklist, a code skeleton, the files to register in an
 |---|---|
 | `AGENTBRIDGE_HOME` | State directory (default `~/.agentbridge`) |
 | `AGY_BIN` | Full path to the `agy` executable if it is not on PATH |
-| `AGENTBRIDGE_TOKEN` | Bearer token for the proxy (same as `--token`) |
+| `AGENTBRIDGE_TOKEN` | Bearer token for the proxy and for `ab ui` (same as `--token`) |
 | `OLLAMA_HOST` | Base address for the built-in `ollama` endpoint (e.g. `192.168.1.50:11434`) |
 | `AGENTBRIDGE_MAX_DEPTH` | Max delegation depth in the bridge (default `2`) |
 | `AGENTBRIDGE_DEPTH` | Current depth (set by the bridge) |
@@ -1387,36 +1434,49 @@ The full guide, with the checklist, a code skeleton, the files to register in an
 | `AGENTBRIDGE_MAX_PROCS` | Maximum agent processes alive at once in one AgentBridge process (default 24, `0` = unlimited). Beyond it a spawn fails with `RATE_LIMITED` (HTTP 429 in the proxy) |
 | `AGENTBRIDGE_RUN_MAX_AGE_MS`, `AGENTBRIDGE_RUN_MAX_COUNT` | Retention for bridge run records (default 7 days, 500) |
 | `AGENTBRIDGE_ACCEPT_TOS_RISK` | Same as `--accept-tos-risk` for the proxy account pool |
+| `AGENTBRIDGE_AGENT_TTL_MS` | How long the proxy keeps an agent-mode sandbox run before expiring it (default 30 minutes) |
+| `AGENTBRIDGE_SUBDELEGATION` | Set to `false` to forbid `runAsSubagent` / delegation from a child (default allowed) |
+| `AGENTBRIDGE_DEBUG` | Any value: the OpenCode adapter logs its message polling to stderr |
+| `AGENTBRIDGE_OFFLINE` | `1` skips live quota queries (quota is reported as offline); set automatically when a run has `offline: true` |
+| `AGENTBRIDGE_PROACTIVE_MOCK` | `1` makes proactive quota checks use fixtures instead of the network (testing) |
+| `AGENTBRIDGE_MEMORY_FALLBACK` | `1` stores project memory under `<AGENTBRIDGE_HOME>/memory/` instead of `<repo>/.agentbridge/memory.json` |
+| `AGENTBRIDGE_ACCOUNT_NAME` | Active managed-account name; part of the Codex daemon pool key so accounts never share a warm daemon |
+| `AGENTBRIDGE_MCP_PASSTHROUGH` | Operator allowlist (names, or `*`) of host MCP servers children may use; unset = none. A call's `mcpPassthrough` can only select a subset |
+| `AGENTBRIDGE_MCP_SOURCE_DIR` | Directory holding the `mcp.json` that passthrough reads (default `~/.pi/agent`) |
+| `AGENTBRIDGE_ENABLE_SKILLS` | `1`/`true` lets children see Open Agent Skills (same as `skills: true`) |
 
 ## Testing
 
-Acceptance tests run **real** agents (never mocked) and therefore need the CLIs installed and logged in; some tests make many live calls and can take several minutes.
+`npm test` runs the offline suites (no agent CLI or login needed). The live suites run **real** agents (never mocked) and therefore need the CLIs installed and logged in; some make many live calls and can take several minutes. Suites for missing agents skip themselves.
 
 ```bash
-npm run accept                       # runs the acceptance suite (acceptance/run.mjs)
+npm test                             # offline suites, serial
+npm run accept                       # every acceptance suite (acceptance/run.mjs)
 node --test acceptance/core.test.mjs # a single file
 ```
 
-Test files: `core`, `claude`, `codex`, `opencode`, `pi`, `fallback`, `agy` (adapter, permissions, sessions, bridge, proxy, telemetry, handoff and 7 caller x callee pairs), `bridge`, `pairs` (all 9 caller x callee combinations), `registry`, `keydelivery`, `proxy`, `cli`, `extras`, `telemetry`, `context`, `hooks`, `endpoint` (real Ollama; skipped with a message if it is not running). Honest notes about residual limitations are in `acceptance/ADAPTER_NOTES.md`.
+There is one `acceptance/<topic>.test.mjs` per area. Live adapter suites: `claude`, `codex`, `opencode`, `pi`, `agy` (adapter, permissions, sessions, bridge, proxy, telemetry, handoff and 7 caller x callee pairs involving agy), `endpoint` (real Ollama; skipped with a message if it is not running), `fallback`. Bridge suites: `bridge`, `pairs` (the 9 claude/codex/opencode caller x callee combinations), `keydelivery`, `mcp-*`. Machine-independent suites (private `PATH`, no model calls): `readiness`, `doctor`, `setup`, `install`, `cli`, `extras`, `telemetry`, `context`, `hooks`, `quota*`, `accounts`, `memory`, `checkpoint*`, `pipeline`, `consensus`, `ui*`, `proxy-*`. Honest notes about residual limitations are in `acceptance/ADAPTER_NOTES.md`.
 
 ## Project layout
 
 ```
 src/                TypeScript source; compiled to dist/ for publishing on npm
   index.ts          public API
-  core/             errors, normalized events, hardened process spawning, checkpointing, config
-  adapters/         claude.ts, codex.ts, opencode.ts, agy.ts, pi.ts, endpoint.ts (Ollama / any HTTP base URL), cursor.ts, grok.ts, gemini.ts, devin.ts, acp.ts
+  core/             catalog (BUILTIN_AGENTS), errors, normalized events, hardened process spawning, config, accounts, readiness, shared resources
+  adapters/         claude.ts, codex.ts, codex-daemon.ts (app-server), opencode.ts, agy.ts, pi.ts, endpoint.ts (Ollama / any HTTP base URL),
+                    cursor.ts, grok.ts, gemini.ts, devin.ts (all on cli-json-lines.ts), acp.ts
   bridge/           MCP bridge server, attach helper, subagent runner, run registry
-  extras/           parallel (fanout/race), schema, worktree, budget, doctor, pipeline, consensus (review/ensemble), repair
+  extras/           parallel (fanout/race), schema, worktree, budget, doctor, checkpoint, pipeline, consensus (review/ensemble), repair
   telemetry/        stats, context policy/compact/handoff, hooks, tracking, project memory
-  quota/            proactive quota probing (Anthropic OAuth usage, Codex usage backend)
+  quota/            proactive quota probing (Claude, Codex, Antigravity, Gemini) and quota-aware routing
   server/           OpenAI + Anthropic compatible proxy
   ui/               `ab ui` local dashboard server
   types/            shared option/event/result types
-  cli/              `agentbridge` / `ab` command (+ install.ts, install-ide.ts, setup.ts, accounts.ts)
-docs/                PROXY.md, TELEMETRY.md, EXTENDING.md
+  cli/              `agentbridge` / `ab` command (+ install.ts, install-ide.ts, setup.ts, accounts.ts, config.ts)
+docs/                REFERENCE.md, PROXY.md, TELEMETRY.md, EXTENDING.md, HARNESS_VALIDATION.md, PROVIDER_QUOTA_SUPPORT.md
 acceptance/          real-agent acceptance tests and notes
 CONTRACT.md          the binding spec for adapters, options, events and errors
+README_AI.md         operational guide for coding agents
 ```
 
 ## Known limitations

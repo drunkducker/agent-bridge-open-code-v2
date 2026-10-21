@@ -11,7 +11,7 @@ npm install
 npm test            # offline suites: no agent CLI or login needed
 ```
 
-To run the live suites you need the CLIs you want to test installed and logged in (`claude`, `codex`, `opencode`, `agy`, `pi`, Ollama). Suites for missing agents skip themselves.
+To run the live suites you need the CLIs you want to test installed and logged in (`claude`, `codex`, `opencode`, `agy`, `pi`, `cursor`, `grok`, `gemini`, `devin`, an ACP agent, Ollama). Suites for missing agents skip themselves.
 
 ```bash
 node --test --test-concurrency=1 acceptance/core.test.mjs      # one suite
@@ -23,13 +23,15 @@ Live suites make **real** model calls and use your subscriptions. Run them one a
 ## Project layout
 
 ```
-src/core/       spawn helpers, errors, events, shared utilities
-src/adapters/   one module per agent (claude, codex, opencode, agy, pi, endpoint)
-src/bridge/     MCP server, subagent runner, permission ceiling, attestation
+src/core/       catalog, spawn helpers, errors, events, config, accounts, shared resources
+src/adapters/   one module per agent (claude, codex, codex-daemon, opencode, agy, pi, cursor, grok, gemini, devin, acp, endpoint) + the shared cli-json-lines runner
+src/bridge/     MCP server, subagent runner, permission ceiling, attestation, run records
 src/server/     OpenAI/Anthropic compatible proxy
-src/telemetry/  usage tracking, context policy, compaction, handoff
-src/extras/     fanout/race, schema, worktree, budget, doctor
-src/cli/        the `ab` command
+src/telemetry/  usage tracking, context policy, compaction, handoff, memory retention, hooks
+src/quota/      quota readers (Claude, Codex, Antigravity, Gemini), proactive probing and routing
+src/extras/     fanout/race, schema, worktree, budget, checkpoints, repair, consensus, pipeline, doctor
+src/ui/         the `ab ui` dashboard
+src/cli/        the `ab` command (main, args, install, install-ide, setup, accounts, config)
 acceptance/     test suites (real agents) + ADAPTER_NOTES.md
 docs/           reference and design docs
 ```
@@ -41,7 +43,7 @@ docs/           reference and design docs
 3. **A change is not done until it has a test that fails without it.**
 4. **Security-sensitive code gets an independent review** (permissions, the MCP bridge, attestation, anything touching secrets). Authors cannot certify their own work.
 5. **Never put secrets on disk or argv.** The attestation key travels only through the process environment.
-6. **Document limits honestly** in `acceptance/ADAPTER_NOTES.md` and the README's limitations section. If something is unverified, say so.
+6. **Document limits honestly** in `acceptance/ADAPTER_NOTES.md` and the [Known limitations](docs/REFERENCE.md#known-limitations) section of docs/REFERENCE.md. If something is unverified, say so.
 7. Match the surrounding code: naming, comment density, idiom. No new dependencies without a very good reason.
 
 ## Adding a new agent

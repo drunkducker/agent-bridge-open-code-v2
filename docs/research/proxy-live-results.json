@@ -1,0 +1,299 @@
+{
+  "date": "2026-10-21T22:21:37.510Z",
+  "model": "gpt-6.1-sol",
+  "effort": "low",
+  "calls": [
+    {
+      "path": "cli",
+      "task": "exact-1",
+      "text": "PONTE_OK",
+      "tool_calls": [],
+      "textDeltas": 1,
+      "toolDeltas": 0,
+      "firstTextMs": 4155.564998,
+      "firstToolMs": null,
+      "totalMs": 5307.654713,
+      "correct": true
+    },
+    {
+      "path": "app-server",
+      "task": "exact-1",
+      "text": "PONTE_OK",
+      "tool_calls": [],
+      "textDeltas": 4,
+      "toolDeltas": 0,
+      "firstTextMs": 3550.418358000001,
+      "firstToolMs": null,
+      "totalMs": 3596.801080000001,
+      "correct": true
+    },
+    {
+      "path": "direct",
+      "task": "exact-1",
+      "text": "PONTE_OK",
+      "tool_calls": [],
+      "textDeltas": 4,
+      "toolDeltas": 0,
+      "firstTextMs": 1432.1496819999993,
+      "firstToolMs": null,
+      "eventCounts": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 1,
+        "response.content_part.added": 1,
+        "response.output_text.delta": 4,
+        "response.metadata": 1,
+        "response.output_text.done": 1,
+        "response.content_part.done": 1,
+        "response.output_item.done": 1,
+        "response.completed": 1
+      },
+      "usage": {
+        "input_tokens": 15,
+        "output_tokens": 8,
+        "total_tokens": 23
+      },
+      "totalMs": 1532.0312240000003,
+      "correct": true
+    },
+    {
+      "path": "direct",
+      "task": "exact-2",
+      "text": "PONTE_OK",
+      "tool_calls": [],
+      "textDeltas": 4,
+      "toolDeltas": 0,
+      "firstTextMs": 1423.0971470000004,
+      "firstToolMs": null,
+      "eventCounts": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 1,
+        "response.content_part.added": 1,
+        "response.output_text.delta": 4,
+        "response.metadata": 1,
+        "response.output_text.done": 1,
+        "response.content_part.done": 1,
+        "response.output_item.done": 1,
+        "response.completed": 1
+      },
+      "usage": {
+        "input_tokens": 15,
+        "output_tokens": 8,
+        "total_tokens": 23
+      },
+      "totalMs": 1545.6565090000004,
+      "correct": true
+    },
+    {
+      "path": "app-server",
+      "task": "exact-2",
+      "text": "PONTE_OK",
+      "tool_calls": [],
+      "textDeltas": 4,
+      "toolDeltas": 0,
+      "firstTextMs": 3178.4650579999998,
+      "firstToolMs": null,
+      "totalMs": 3252.5107769999995,
+      "correct": true
+    },
+    {
+      "path": "cli",
+      "task": "exact-2",
+      "text": "PONTE_OK",
+      "tool_calls": [],
+      "textDeltas": 1,
+      "toolDeltas": 0,
+      "firstTextMs": 4155.868113999999,
+      "firstToolMs": null,
+      "totalMs": 5564.984483999999,
+      "correct": true
+    },
+    {
+      "path": "cli",
+      "task": "exact-3",
+      "text": "PONTE_OK",
+      "tool_calls": [],
+      "textDeltas": 1,
+      "toolDeltas": 0,
+      "firstTextMs": 3674.6371,
+      "firstToolMs": null,
+      "totalMs": 4916.164532999999,
+      "correct": true
+    },
+    {
+      "path": "app-server",
+      "task": "exact-3",
+      "text": "PONTE_OK",
+      "tool_calls": [],
+      "textDeltas": 4,
+      "toolDeltas": 0,
+      "firstTextMs": 3078.7206159999987,
+      "firstToolMs": null,
+      "totalMs": 3160.729228999997,
+      "correct": true
+    },
+    {
+      "path": "direct",
+      "task": "exact-3",
+      "text": "PONTE_OK",
+      "tool_calls": [],
+      "textDeltas": 4,
+      "toolDeltas": 0,
+      "firstTextMs": 1215.565681,
+      "firstToolMs": null,
+      "eventCounts": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 1,
+        "response.content_part.added": 1,
+        "response.output_text.delta": 4,
+        "response.metadata": 1,
+        "response.output_text.done": 1,
+        "response.content_part.done": 1,
+        "response.output_item.done": 1,
+        "response.completed": 1
+      },
+      "usage": {
+        "input_tokens": 15,
+        "output_tokens": 8,
+        "total_tokens": 23
+      },
+      "totalMs": 1321.2962399999997,
+      "correct": true
+    },
+    {
+      "path": "cli",
+      "task": "stock-tool",
+      "text": "",
+      "tool_calls": [
+        {
+          "id": "call_32392f2e8665f7fd72136057",
+          "type": "function",
+          "function": {
+            "name": "consultar_estoque",
+            "arguments": "{\"sku\":\"CANECA-AZUL\"}"
+          }
+        }
+      ],
+      "textDeltas": 0,
+      "toolDeltas": 2,
+      "firstTextMs": null,
+      "firstToolMs": 5804.0505440000015,
+      "totalMs": 5804.1806650000035,
+      "correct": true
+    },
+    {
+      "path": "cli",
+      "task": "stock-result",
+      "text": "Estoque: 17 unidades.",
+      "tool_calls": [],
+      "textDeltas": 1,
+      "toolDeltas": 0,
+      "firstTextMs": 3745.0555259999965,
+      "firstToolMs": null,
+      "totalMs": 4852.685049,
+      "correct": true
+    },
+    {
+      "path": "app-server",
+      "task": "stock-tool",
+      "text": "",
+      "tool_calls": [
+        {
+          "id": "call_f69aa38391c7c44a5767976a",
+          "type": "function",
+          "function": {
+            "name": "consultar_estoque",
+            "arguments": "{\"sku\":\"CANECA-AZUL\"}"
+          }
+        }
+      ],
+      "textDeltas": 0,
+      "toolDeltas": 2,
+      "firstTextMs": null,
+      "firstToolMs": 3384.852583,
+      "totalMs": 3384.899725000003,
+      "correct": true
+    },
+    {
+      "path": "app-server",
+      "task": "stock-result",
+      "text": "Estoque: 17 unidades.",
+      "tool_calls": [],
+      "textDeltas": 7,
+      "toolDeltas": 0,
+      "firstTextMs": 3672.093949999995,
+      "firstToolMs": null,
+      "totalMs": 3829.5807759999952,
+      "correct": true
+    },
+    {
+      "path": "direct",
+      "task": "stock-tool",
+      "text": "",
+      "tool_calls": [
+        {
+          "id": "call_26d9205cb77a4705b1a9242ab44eede5",
+          "type": "function",
+          "function": {
+            "name": "consultar_estoque",
+            "arguments": "{\"sku\":\"CANECA-AZUL\"}"
+          }
+        }
+      ],
+      "textDeltas": 0,
+      "toolDeltas": 10,
+      "firstTextMs": null,
+      "firstToolMs": 1298.4865919999938,
+      "eventCounts": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 1,
+        "response.function_call_arguments.delta": 10,
+        "response.function_call_arguments.done": 1,
+        "response.output_item.done": 1,
+        "response.metadata": 1,
+        "response.completed": 1
+      },
+      "usage": {
+        "input_tokens": 87,
+        "output_tokens": 26,
+        "total_tokens": 113
+      },
+      "totalMs": 1580.0175549999985,
+      "correct": true
+    },
+    {
+      "path": "direct",
+      "task": "stock-result",
+      "text": "Estoque: 17 unidades.",
+      "tool_calls": [],
+      "textDeltas": 7,
+      "toolDeltas": 0,
+      "firstTextMs": 1094.9605850000007,
+      "firstToolMs": null,
+      "eventCounts": {
+        "response.created": 1,
+        "response.in_progress": 1,
+        "response.output_item.added": 1,
+        "response.content_part.added": 1,
+        "response.output_text.delta": 7,
+        "response.metadata": 1,
+        "response.output_text.done": 1,
+        "response.content_part.done": 1,
+        "response.output_item.done": 1,
+        "response.completed": 1
+      },
+      "usage": {
+        "input_tokens": 142,
+        "output_tokens": 11,
+        "total_tokens": 153
+      },
+      "totalMs": 1271.715836000003,
+      "correct": true
+    }
+  ],
+  "upstream": "router-for-me/CLIProxyAPI@0db19025571684b198a2ef508f99b41c717337e8",
+  "note": "Minimal HTTP subset, not full CLIProxyAPI. app-server uses experimental adapter injection. Sequential small sample, no statistical speed claim."
+}

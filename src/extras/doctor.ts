@@ -9,6 +9,9 @@ import { findBinary as findPi } from '../adapters/pi.js';
 import { skillRoots } from '../core/shared-resources.js';
 
 import { getOpencodeUserConfigPaths } from '../cli/install.js';
+import { BUILTIN_AGENTS } from '../core/catalog.js';
+import { loadEndpoints } from '../adapters/endpoint.js';
+import { hintFor } from '../core/hints.js';
 
 const home = os.homedir();
 
@@ -171,7 +174,8 @@ export function detectMcpServers(name: string, cwd = process.cwd()): string[] {
 
 export interface CheckItem {
   name: string;
-  status: 'ok' | 'fail' | 'warn';
+  /** `skip` = informational (an optional agent that is not installed / an endpoint that is not reachable); never fails the run. */
+  status: 'ok' | 'fail' | 'warn' | 'skip';
   detail: string;
 }
 
@@ -179,23 +183,46 @@ export interface DoctorResult {
   ok: boolean;
   checks: CheckItem[];
   agents: Record<string, any>;
+  /** Agents (CLIs and endpoints) that are installed/reachable and not known to be broken. */
+  usable?: string[];
+}
+
+// Executable name when it differs from the agent name.
+const BIN_NAME: Record<string, string> = { cursor: 'cursor-agent', acp: 'acp-agent' };
+
+function endpointConfigs(): Record<string, any> {
+  try {
+    return loadEndpoints();
+  } catch {
+    return {};
+  }
+}
+
+async function reachable(baseUrl: string): Promise<boolean> {
+  try {
+    await fetch(`${baseUrl}/models`, { signal: AbortSignal.timeout(4000) });
+    return true; // any HTTP answer (even 401) means something is listening
+  } catch {
+    return false;
+  }
 }
 
 export async function doctor({
   cwd = process.cwd(),
   ports = [8787],
   live = false,
-  agents = ['claude', 'codex', 'opencode', 'agy', 'pi'],
+  agents,
   models = true,
 }: {
   cwd?: string;
   ports?: number[];
   live?: boolean;
+  /** Default: every BUILTIN_AGENTS entry plus every configured endpoint (ollama + custom). */
   agents?: string[];
   models?: boolean;
 } = {}): Promise<DoctorResult> {
   const checks: CheckItem[] = [];
-  const add = (name: string, status: 'ok' | 'fail' | 'warn', detail: string) => checks.push({ name, status, detail });
+  const add = (name: string, status: CheckItem['status'], detail: string) => checks.push({ name, status, detail });
   const major = Number(process.versions.node.split('.')[0]);
   add('node', major >= 22 ? 'ok' : 'fail', `v${process.versions.node} (need >= 22)`);
   add('platform', 'ok', `${process.platform} ${os.release()}`);
@@ -214,9 +241,44 @@ export async function doctor({
     add(`port ${p}`, free ? 'ok' : 'warn', free ? 'free' : 'in use (pick another with --port)');
   }
   const info: Record<string, any> = {};
+  const endpoints = endpointConfigs();
+  const names = agents ?? [...BUILTIN_AGENTS, ...Object.keys(endpoints)];
+  const usable = new Set<string>();
   await Promise.all(
-    agents.map(async (name) => {
-      const bin = name === 'agy' ? findAgy() : name === 'pi' ? findPi() : resolveBinary(name === 'cursor' ? 'cursor-agent' : name);
+    names.map(async (name) => {
+      const ep = (BUILTIN_AGENTS as readonly string[]).includes(name) ? undefined : endpoints[name];
+      if (ep) {
+        const a: any = (info[name] = { installed: true, endpoint: true, baseUrl: ep.baseUrl, type: ep.type, reachable: null, models: null, live: null });
+        a.reachable = await reachable(ep.baseUrl);
+        if (!a.reachable) {
+          add(name, 'skip', `endpoint ${ep.baseUrl} not reachable (nothing listening; fine if you do not use it)`);
+          return;
+        }
+        if (models) {
+          try {
+            const { agents: reg } = await import('../index.js');
+            a.models = (await withTimeout(reg.models(name), 20000)).slice(0, 30);
+          } catch (e: any) {
+            a.modelsError = e.message;
+          }
+        }
+        let st: CheckItem['status'] = 'ok';
+        if (live) {
+          try {
+            const { ask } = await import('../index.js');
+            const t0 = Date.now();
+            const r = await ask(name, { prompt: 'reply with exactly PONG', timeoutMs: 120000, cwd: os.tmpdir(), session: { mode: 'ephemeral' } });
+            a.live = { ok: /PONG/i.test(r.text), ms: Date.now() - t0 };
+          } catch (e: any) {
+            a.live = { ok: false, error: `${e.code || ''} ${e.message}`.trim() };
+          }
+          if (!a.live.ok) st = 'fail';
+        }
+        if (st === 'ok') usable.add(name);
+        add(name, st, `endpoint ${ep.baseUrl} reachable${a.models ? `; ${a.models.length} models` : ''}${a.live ? `; live ${a.live.ok ? `ok ${a.live.ms}ms` : 'FAILED: ' + a.live.error}` : ''}`);
+        return;
+      }
+      const bin = name === 'agy' ? findAgy() : name === 'pi' ? findPi() : resolveBinary(BIN_NAME[name] || name);
       const a: any = (info[name] = {
         installed: !!bin,
         path: bin,
@@ -227,7 +289,7 @@ export async function doctor({
         live: null,
       });
       if (!bin) {
-        add(name, 'fail', 'not installed (not on PATH)');
+        add(name, 'skip', `not installed (optional)${hintFor(name, 'NOT_INSTALLED')}`);
         return;
       }
       a.version = await version(bin);
@@ -262,7 +324,8 @@ export async function doctor({
         }
       }
       a.mcpServers = detectMcpServers(name, cwd);
-      const st = a.loggedIn === false ? 'warn' : a.live && !a.live.ok ? 'fail' : 'ok';
+      const st: CheckItem['status'] = a.live && !a.live.ok ? 'fail' : a.loggedIn === false ? 'warn' : 'ok';
+      if (st === 'ok') usable.add(name);
       add(
         name,
         st,
@@ -299,6 +362,11 @@ export async function doctor({
         ' (children see skills only with skills:true or AGENTBRIDGE_ENABLE_SKILLS=1)'
     );
   }
+  if (usable.size === 0 && names.length > 0) {
+    add('agents', 'fail', 'no usable agent: install and log in to at least one agent CLI (e.g. npm i -g @anthropic-ai/claude-code, then `claude`), or configure an endpoint with `ab endpoint add`');
+  } else if (names.length > 0) {
+    add('agents', 'ok', `${usable.size} usable: ${[...usable].sort().join(', ')}`);
+  }
   checks.sort((x, y) => x.name.localeCompare(y.name));
-  return { ok: !checks.some((c) => c.status === 'fail'), checks, agents: info };
+  return { ok: !checks.some((c) => c.status === 'fail'), checks, agents: info, usable: [...usable].sort() };
 }

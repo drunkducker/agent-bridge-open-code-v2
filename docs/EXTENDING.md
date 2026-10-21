@@ -19,7 +19,7 @@ ab endpoint add anth_proxy https://proxy.example.com --type anthropic --model my
 ab endpoint list
 ```
 
-or edit `~/.agentbridge/endpoints.json` (see the README section "HTTP endpoints"). From that moment the name works in `ab ask/run/fanout/race`, in the library (`ask('mygateway', ...)`), and through the bridge as `ask_mygateway` / `dispatch_mygateway` for any other agent. Run `ab install claude` again to get a matching relay subagent in Claude Code.
+or edit `~/.agentbridge/endpoints.json` (see [REFERENCE.md, HTTP endpoints](REFERENCE.md#http-endpoints-ollama-and-any-base-url)). From that moment the name works in `ab ask/run/fanout/race`, in the library (`ask('mygateway', ...)`), and through the bridge as `ask_mygateway` / `dispatch_mygateway` for any other agent. Run `ab install claude` again to get a matching relay subagent in Claude Code.
 
 Endpoints are plain chat: no tools, no MCP, no file access, sessions replayed from a local history file. If you need the provider to act on files, it must be an agent CLI (section 2) or sit behind one.
 
@@ -39,7 +39,7 @@ A CLI is a good candidate only if it has all of these:
 4. **Resumable sessions** with a session id you can read from the output. Without this you can only implement `new` and `ephemeral`, and the others must throw `BAD_OPTION`.
 5. A way to set the model, a working directory, and a sandbox/permission level non-interactively.
 
-Run `<cli> --help` and one real headless call before writing code. The output format and session handling decide most of the work. Existing adapters serve as reference implementations: Claude, Codex (CLI and app-server), agy, OpenCode, Cursor, Grok, Gemini, Devin, and generic ACP (`src/adapters/acp.ts`).
+Run `<cli> --help` and one real headless call before writing code. The output format and session handling decide most of the work. If the CLI emits one JSON object per line, start from the shared runner `src/adapters/cli-json-lines.ts` (used by Cursor, Grok, Gemini and Devin) instead of writing a full adapter. Existing adapters serve as reference implementations: Claude, Codex (CLI and app-server), agy, OpenCode, Cursor, Grok, Gemini, Devin, and generic ACP (`src/adapters/acp.ts`).
 
 `src/adapters/agy.ts` is the best worked example of a CLI that is **not** well-behaved: no flag restricts file writes, its config is global, and an unknown session id silently starts a new conversation. It shows how to enforce permissions with a throw-away HOME and per-run rules, how to share state across those homes, and how to verify claims about the CLI before trusting them (every workaround is justified in `acceptance/ADAPTER_NOTES.md`). Probe the CLI with real calls before designing around its documentation.
 
@@ -56,9 +56,9 @@ export default {
 ```
 
 - `opts` are validated RunOptions (`prompt`, `model`, `effort`, `permissions`, `cwd`, `timeoutMs`, `signal`, `session`, `systemPrompt`, `mcpServers`, `env`, `jsonSchema`, `extraArgs`, `isolated`, plus `fallback`/`fallbackOn`, `images`, `harness`, `offline`, `transport`/`appServer`, `skills`, `mcpPassthrough`, `defaultPermissions`, `writableRoots` — all defined in `src/types/index.ts`). Call `validateOptions(opts)` from `src/index.ts` first.
-- Yield events built with `ev` from `src/core/events.ts`: `ev.session(id)`, `ev.text(delta)`, `ev.thinking(delta)`, `ev.tool(name, input, output?)`, `ev.usage(input, output, cost?)`, `ev.error(msg)`, `ev.raw(obj)`.
+- Yield events built with `ev` from `src/core/events.ts`: `ev.session(id)`, `ev.text(delta)`, `ev.thinking(delta)`, `ev.tool(name, input, output?)`, `ev.usage(input, output, cost?, incremental?)`, `ev.fallback(...)`, `ev.quota(...)`, `ev.error(msg)`, `ev.raw(obj)`.
 - Return `{ text, sessionId, usage:{input,output,cost?}, exitCode, model, durationMs, timedOut:false }`.
-- Throw `AgentError` (`src/core/errors.ts`) with one of `NOT_INSTALLED`, `NOT_LOGGED_IN`, `TIMEOUT`, `ABORTED`, `BAD_OPTION`, `AGENT_FAILED`.
+- Throw `AgentError` (`src/core/errors.ts`) with one of `NOT_INSTALLED`, `NOT_LOGGED_IN`, `TIMEOUT`, `ABORTED`, `BAD_OPTION`, `AGENT_FAILED`, `RATE_LIMITED`.
 - **Anything the CLI cannot do must throw `BAD_OPTION`, never be silently ignored.** For example, if it has no read-only sandbox, `permissions: 'read-only'` must not quietly run with write access.
 - Session semantics are the same for every agent: `new` (persisted), `ephemeral` (nothing persisted), `continue` (append, by id or the most recent for this cwd), `fork` (new id branching from the old history; original untouched). Concurrent `continue` on one session should be rejected with `BAD_OPTION 'session busy'`.
 
@@ -124,7 +124,7 @@ The canonical name list is `BUILTIN_AGENTS` in `src/core/catalog.ts`; `src/index
 | `src/adapters/endpoint.ts` | add the name to `BUILTIN` so an endpoint cannot reuse it |
 | `src/bridge/mcp.ts` | add to `BUILTIN_AGENTS` and give it an entry in `DEFAULT_MODEL` (the cheap default model for delegation) |
 | `src/bridge/attach.ts` | add to the allowed caller list if it can act as a caller (needs MCP support, see 2.5) |
-| `src/extras/doctor.ts` | add a login/auth check and include it in the default `agents` list |
+| `src/extras/doctor.ts` | nothing for discovery: `ab doctor` probes every `BUILTIN_AGENTS` entry (and every configured endpoint) automatically, and reports a missing CLI as `[skip]`. Only add a `CRED` login check (and a `BIN_NAME` entry if the executable name differs from the agent name) |
 | `src/server/common.ts` | add a model-routing rule (`myagent/<model>`) if you want it in the OpenAI/Anthropic proxy |
 | `src/telemetry/stats.ts` | add context-window defaults and, if the CLI stores sessions on disk, a reader so `contextOf()` is exact; otherwise it falls back to run-usage aggregates |
 | `src/cli/install.ts` | add a description in `BLURB` so `ab install claude` writes a good relay subagent |
@@ -133,7 +133,7 @@ The canonical name list is `BUILTIN_AGENTS` in `src/core/catalog.ts`; `src/index
 
 ### 2.5 Using it as a caller (optional)
 
-For `myagent` to delegate to other agents, it must be able to load an MCP server. `mcpConfigFor()` in `src/bridge/attach.mjs` produces the server entry; your adapter must pass it to the CLI in whatever way the CLI wants. Check how the CLI exposes environment variables to its MCP subprocesses: the bridge's anti-forgery key is delivered through the environment, and Codex needed a special HTTP transport because it does not pass parent environment variables to its MCP servers (see `acceptance/keydelivery.test.mjs`). If your CLI behaves like Codex, follow the same pattern in `src/bridge/mcp.ts` and `src/bridge/subagent.ts`.
+For `myagent` to delegate to other agents, it must be able to load an MCP server. `mcpConfigFor()` in `src/bridge/attach.ts` produces the server entry; your adapter must pass it to the CLI in whatever way the CLI wants. Check how the CLI exposes environment variables to its MCP subprocesses: the bridge's anti-forgery key is delivered through the environment, and Codex needed a special HTTP transport because it does not pass parent environment variables to its MCP servers (see `acceptance/keydelivery.test.mjs`). If your CLI behaves like Codex, follow the same pattern in `src/bridge/mcp.ts` and `src/bridge/subagent.ts`.
 
 If the CLI cannot load MCP servers, it can still be a **callee**: other agents can call it, it just cannot call back.
 
@@ -154,7 +154,7 @@ Acceptance tests in this project run the real CLI (never mocks). Copy the closes
 
 ### 2.7 Document the limits
 
-If the CLI has a gap (no streaming, no fork, no read-only sandbox), say so in `acceptance/ADAPTER_NOTES.md` and in the README's "Known limitations", and make the unsupported option throw `BAD_OPTION`. Honest gaps are fine; faking support is not.
+If the CLI has a gap (no streaming, no fork, no read-only sandbox), say so in `acceptance/ADAPTER_NOTES.md` and in [REFERENCE.md, Known limitations](REFERENCE.md#known-limitations), and make the unsupported option throw `BAD_OPTION`. Honest gaps are fine; faking support is not.
 
 ## 2.8 Rate limits
 Map provider limits to `new AgentError('RATE_LIMITED', msg, { retryAfterMs })` (HTTP 429/529, or run the error text through `asRateLimited` from `src/core/errors.ts`). That is all an adapter needs for `fallback` chains, the proxy 429 and the MCP `fallback` argument to work. `src/adapters/pi.ts` is a worked example of a CLI that reports provider errors inside its JSON stream with exit code 0.

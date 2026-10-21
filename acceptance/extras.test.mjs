@@ -176,7 +176,9 @@ test('doctor: portFree reflects an actually-bound port', async () => {
   assert.equal(await portFree(port), true);
 });
 
-test('doctor: reports installed + logged-in for all three real CLIs', { timeout: 60000 }, async () => {
+test('doctor: probes every builtin agent and reports installed as a boolean (machine-independent; see doctor.test.mjs)', { timeout: 60000 }, async () => {
   const d = await doctor({ models: false, live: false });
-  for (const a of ['claude', 'codex', 'opencode']) assert.ok(d.agents[a].installed, `${a} should be installed in this environment`);
+  for (const a of ['claude', 'codex', 'opencode', 'agy', 'pi', 'cursor', 'grok', 'gemini', 'devin', 'acp'])
+    assert.equal(typeof d.agents[a].installed, 'boolean', a);
+  assert.ok(Array.isArray(d.usable));
 });

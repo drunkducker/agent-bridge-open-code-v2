@@ -284,65 +284,13 @@ If you have shell execution access, you can run high-level orchestration workflo
 - **Live Visual Time Machine & Dashboard (`ab ui`):**
   Explore runs, tokens, cost, subagent trees, and time-machine checkpoints at `http://127.0.0.1:8788`.
 
-## Provider & Adapter Safety Guarantees (Phase 4 Hardening)
+## Behavior worth knowing
 
-- **Harness-specific permission requests:** AgentBridge applies provider-native flags, modes, tool filters, or prompt guardrails as available. A `read-only` or `plan` request on a generic CLI adapter is not necessarily an OS-level sandbox and does not guarantee that provider configuration, hooks, MCP servers, or subprocesses cannot cause side effects. See [Harness validation](https://github.com/rodolfonobrega/agentbridge/blob/main/docs/HARNESS_VALIDATION.md) for provider-specific behavior and verification scope.
-- **Unsupported options:** Adapter-specific unsupported parameters (such as session fork for ephemeral endpoints or images for text-only drivers) are rejected with `AgentError('BAD_OPTION')` where implemented. See [Harness validation](https://github.com/rodolfonobrega/agentbridge/blob/main/docs/HARNESS_VALIDATION.md) for provider-specific compatibility notes.
-- **Abort & Timeout Propagation:**
-  All adapters check child-process timeout (`r.timedOut`) and abort cancellation (`r.aborted`) after waiting, cleanly raising `TIMEOUT` and `ABORTED` with partial output preserved for telemetry.
-- **DAG Pipeline Integrity:**
-  In multi-step pipelines (`ab pipeline`), success is strictly determined across all execution steps: if any step fails with `stopOnError: false`, overall success evaluates to `false` and triggers automated rollback if configured, preventing misleading partial deployments.
-- **Consensus & Ensemble Integrity:**
-  In multi-agent consensus reviews (`ab review`), rejected verdicts take unequivocal precedence over contradictory comments. In ensemble runs (`ab ensemble`), lack of a clear majority results in an explicit tie (`hasConsensus: false`, `consensusMethod: "tie"`) rather than picking an arbitrary winner.
-- **Subagent Delegation Discovery:**
-  The `SubagentRoster` normalizes full MCP server tool prefixes (such as `mcp__agentbridge__ask_*` and `mcp__agentbridge__dispatch_*`), allowing seamless subagent tree tracking and preventing premature completion of asynchronous background dispatches.
-
-## Telemetry, Context & Quota Reliability Guarantees (Phase 5 Hardening)
-
-- **Loop-Free Compaction & Handoff Maintenance (`MAINTENANCE_POLICY`):**
-  Context maintenance routines (`compact` and cross-agent `handoff`) execute with all context policies and hard thresholds strictly suspended (`hardAction: 'none'`), eliminating recursive re-entry loops where a summarizing subagent is terminated by the very limit it was spawned to resolve.
-- **Accurate Context Overflow Tracking:**
-  Context window limits are never inflated to artificial boundaries (e.g. 1M tokens) when a session exceeds its known capacity. Instead, known windows remain authentic, overflow flags (`overflow: true`) are explicitly set, and percent indicators accurately exceed 100% to trigger warnings and hard boundaries without masking.
-- **Fallback Session Continuity & Effective Agent Attribution:**
-  When a requested agent triggers a fallback to an alternative model or agent, telemetry and persistent sessions are indexed under `effectiveAgent`. Subsequent continuation requests on the same session key cleanly resume on the effective agent that actually holds the conversational state, preventing mismatched CLI session errors.
-- **Multi-Window Proactive Quota & Account Health:**
-  `ab account quota` inspects both primary windows (5h/session) and secondary windows (7d/weekly for Codex and Claude). Provider health uses a 95% primary threshold; Claude weekly health uses 98%, while Codex weekly follows the configured health threshold. The newer `quotaPolicy` route gate has its own requested primary remaining-percent threshold and treats an exhausted known secondary window as blocking. Network errors or missing tokens are clearly reported as `error` or `unknown`, never falsified as 0% used.
-
-## Storage, Memory & UI Security Guarantees (Phase 6 Hardening)
-
-- **Root-Walking Discovery (`findProjectRoot`):**
-  Config files (`.agentbridge/config.json`) and project memory (`.agentbridge/memory.json`) are resolved by walking up the directory tree until the Git repository root or an `.agentbridge` folder is found. Agents running in monorepos or subfolders therefore share the same rules and central configuration.
-- **Atomic File Writing & Explicit Failure Propagation:**
-  All writes to config files, account manifests (`accounts.json`) and project memory are atomic: they write a temporary file and swap it in with `renameSync`. Disk-full and permission errors propagate clearly instead of being swallowed by empty `catch` blocks.
-- **Cross-Source Memory Consistency:**
-  `loadMemory` compares `updatedAt` between the local store (`.agentbridge/memory.json`) and the global fallback store (`~/.agentbridge/memory/<repoHash>.json`), so an agent always works on the most recent state, even after a fallback switch.
-- **Auto-Injection of Project Memory:**
-  Every run (`ab run`, `runTracked`, `ask`) automatically injects the `[PROJECT CONVENTIONS & MEMORY - PRESERVE THESE RULES]` block into the prompt when the project has saved rules or decisions. No manual injection is needed.
-- **Account Directory Path Traversal Prevention:**
-  `ab account add` and `ab account remove` validate agent names against known lists and check that the profile directory stays inside the managed profiles root (`.agentbridge/profiles`), preventing arbitrary creation or deletion outside the sandbox.
-- **Dashboard UI CSP & Authentication Compliance:**
-  The Time Machine in the visual dashboard (`ab ui`) has no inline `style="..."` attributes, using static CSS classes compatible with a strict Content Security Policy. All API calls (`/api/checkpoints`, `/api/checkpoints/:id/diff`, `/api/checkpoints/:id/rollback`) send the `Bearer <token>` authorization header.
-- **Strict Token & Request Validation (Proxy API):**
-  OpenAI- and Anthropic-compatible endpoints strictly reject invalid or incompatible parameters with `400 Bad Request`, including `max_tokens <= 0` or non-integer values, and the unsupported `previous_response_id` flag.
-- **Isolated Proxy Server Stores:**
-  Multiple programmatic proxy instances each keep their own isolated `AgentStore` and `sessionStore`, so sessions and active sandboxes never leak between concurrent instances.
-
-## Tooling, Installers & Ecosystem Guarantees (Phase 7 Hardening)
-
-- **Centralized Agent Catalog (`src/core/catalog.ts`):**
-  All built-in agents (`claude`, `codex`, `opencode`, `agy`, `pi`, `cursor`, `grok`, `gemini`, `devin`, `acp`) and account rules are defined in one central catalog (`BUILTIN_AGENTS`, `VALID_ACCOUNT_AGENTS`), so the CLI, proxy, MCP and profile management never drift apart.
-- **Universal IDE Compatibility (`process.execPath`):**
-  IDE installers (`ab install vscode|cursor|zed|windsurf`) use the canonical `process.execPath` instead of fragile `node` lookups on PATH, preventing `node: command not found` errors when the IDE is launched from a desktop environment with a restricted PATH.
-- **Transactional MCP Updates & Corruption Defense:**
-  Installing MCP tools for Codex makes a transactional backup of `config.toml` first and restores the previous state if `codex mcp add` fails. For Pi (`~/.pi/agent/mcp.json`), files with invalid JSON or comments are left untouched, and a clear error explains how to configure it manually.
-- **Strict Scope Isolation in Setup Wizard (`ab setup` / `ab wizard`):**
-  When run with `--scope project`, the setup wizard confines all configuration and skill copies to the target project directory (`flags.cwd` or `process.cwd()`), without touching the user's `~/.agents/skills` or `~/.claude/skills`. A failure for any agent during setup exits with a non-zero code (`process.exitCode = 1`), so CI/CD scripts can detect it.
-- **Zero Resource & Timer Leaks (`withTimeout`):**
-  All model probes and health checks (`ab doctor`) use `withTimeout`, which clears its timer as soon as the call settles (`clearTimeout`), so leftover 20-second timers never keep the event loop alive.
-- **Cross-Platform Diagnostic Precision (`ab doctor`):**
-  Credential diagnostics natively support the `CLAUDE_CONFIG_DIR` variable and unify OpenCode config detection across all Windows directories (`%LOCALAPPDATA%`, `%APPDATA%`, `.config`).
-- **Strict SemVer & Synchronized Lockfiles:**
-  Release automation (`scripts/release.mjs`) strictly validates versions in the official SemVer format and keeps `package-lock.json` in sync with `package.json` via `npm install --package-lock-only`, keeping tags and releases consistent.
-
-
-
+- **Permissions are a request, not a universal sandbox.** AgentBridge applies each provider's native flags, modes or tool filters. A `read-only` or `plan` run on a generic CLI adapter may rely on prompt guidance, so do not treat it as an OS-level boundary. See [Harness validation](https://github.com/rodolfonobrega/agentbridge/blob/main/docs/HARNESS_VALIDATION.md).
+- **Unsupported options fail loudly.** An option an adapter cannot honor (for example session `fork` on an endpoint, or images on a text-only driver) raises `BAD_OPTION` instead of being ignored.
+- **Pipelines and reviews:** with `ab pipeline`, one failed step makes the overall result fail (and rolls back if configured). In `ab review`, a rejected verdict wins over contradicting comments. In `ab ensemble`, no clear majority is reported as a tie (`hasConsensus: false`), not an arbitrary winner.
+- **Fallback keeps the conversation with whoever answered.** After a fallback, continuing the same session resumes on the agent that actually holds the conversation state.
+- **Quota readings are never invented.** Network errors or missing credentials show as `error` or `unknown`, never 0% used. `ab account quota` reports the primary (5h/session) and weekly windows.
+- **Project memory and config are shared across a repo.** `.agentbridge/config.json` and `.agentbridge/memory.json` are found by walking up to the git root, and saved rules and decisions are injected into every run's prompt automatically.
+- **Ports and auth:** the dashboard (`ab ui`) and proxy bind to loopback and honor `--token` / `AGENTBRIDGE_TOKEN`.
+- **Diagnostics:** `ab doctor` checks every built-in agent and endpoint; agents you have not installed are shown as `[skip]` and are fine.

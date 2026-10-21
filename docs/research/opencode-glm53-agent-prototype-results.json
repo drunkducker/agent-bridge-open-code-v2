@@ -1,0 +1,66 @@
+{
+  "date": "2026-10-21T23:22:52.335Z",
+  "path": "agentbridge-agent-v2-prototype",
+  "model": "opencode/glm-5.3-flash-free",
+  "expected": {
+    "lote": "5d716191ff1c3c78",
+    "quantidade_pagos": 4,
+    "total_centavos": 17081
+  },
+  "toolEvidence": [
+    {
+      "name": "read",
+      "status": "completed",
+      "containsFixtureMarker": true
+    },
+    {
+      "name": "read",
+      "status": "completed",
+      "containsFixtureMarker": true
+    }
+  ],
+  "note": "Injected experiment adapter, not the production adapter. Buffers events. No validation of production streaming/concurrency/session resumption.",
+  "modelEvidence": {
+    "assistantModels": [
+      {
+        "id": "glm-5.3-flash-free",
+        "providerID": "opencode",
+        "variant": "default"
+      },
+      {
+        "id": "glm-5.3-flash-free",
+        "providerID": "opencode",
+        "variant": "default"
+      },
+      {
+        "id": "glm-5.3-flash-free",
+        "providerID": "opencode",
+        "variant": "default"
+      }
+    ],
+    "assistantAgents": [
+      {
+        "agent": "build",
+        "finish": "tool-calls"
+      },
+      {
+        "agent": "build",
+        "finish": "tool-calls"
+      },
+      {
+        "agent": "build",
+        "finish": "stop"
+      }
+    ],
+    "outcome": "succeeded",
+    "errors": []
+  },
+  "text": "{\"lote\": \"5d716191ff1c3c78\", \"quantidade_pagos\": 4, \"total_centavos\": 17081}",
+  "strictJson": true,
+  "semanticCorrect": true,
+  "diskReadObserved": true,
+  "correct": true,
+  "fixtureUnchanged": true,
+  "totalMs": 21274.949018000003,
+  "temporaryWorkspaceRemoved": true
+}

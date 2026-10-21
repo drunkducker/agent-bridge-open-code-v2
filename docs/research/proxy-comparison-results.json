@@ -1,0 +1,73 @@
+{
+  "scope": "Offline fixtures; no inference, OAuth, latency or throughput benchmark",
+  "copilot": {
+    "structuredToolHistory": true,
+    "samplingAndLimitTranslated": true,
+    "partialToolArgumentsStreamed": true
+  },
+  "agentbridge": {
+    "httpEndpointWorks": true,
+    "historyConvertedToSingleUserMessage": true,
+    "temperatureIgnored": true,
+    "maxTokensNotForwardedToOpenAIEndpoint": true,
+    "toolsRenderedInPromptInsteadOfForwardedAsSchemas": true,
+    "nativeEndpointToolDeltasNotExposed": true,
+    "upstreamRequestCount": 3
+  },
+  "date": "2026-10-21",
+  "agentbridgeCommit": "528a5c5cc413332e4f0e6f8cf2d6ccfc841ab66f",
+  "copilotCommit": "0ea08febdd7e3e055b03dd298bf57e669500b5c1",
+  "codegraph": {
+    "version": "1.6.2",
+    "projects": {
+      "CLIProxyAPI": {
+        "commit": "0db19025571684b198a2ef508f99b41c717337e8",
+        "files": 1905,
+        "nodes": 43727,
+        "edges": 163195
+      },
+      "copilot-api": {
+        "commit": "0ea08febdd7e3e055b03dd298bf57e669500b5c1",
+        "files": 49,
+        "nodes": 606,
+        "edges": 1141
+      },
+      "claude-code-openai-wrapper": {
+        "commit": "a6c820d9a843f73c2e09aad3b4dead1544c25006",
+        "files": 20,
+        "nodes": 301,
+        "edges": 527
+      },
+      "gpt4free": {
+        "commit": "de296be3a760e5cbc973c8e06c21054f5756f37b",
+        "files": 422,
+        "nodes": 9086,
+        "edges": 24182
+      }
+    }
+  },
+  "wrapperAstProbe": {
+    "originalFunctionExecuted": "MessageAdapter.messages_to_prompt",
+    "schemaRoles": [
+      "system",
+      "user",
+      "assistant"
+    ],
+    "toolRoleContentRetained": false
+  },
+  "verification": {
+    "typescriptCompilation": "passed, output in temporary directory",
+    "freshBuildTests": {
+      "tests": 45,
+      "pass": 45,
+      "fail": 0,
+      "skipped": 0,
+      "suites": [
+        "acceptance/proxy-features.test.mjs",
+        "acceptance/proxy-tools.test.mjs",
+        "acceptance/codex-phase2.test.mjs"
+      ]
+    }
+  },
+  "probeSha256": "3371094c0150702d02b6eafec31ad1e55dbf730361b789899e50814d333308dd"
+}
