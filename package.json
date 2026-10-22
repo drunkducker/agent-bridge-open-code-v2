@@ -41,7 +41,10 @@
     "dist",
     "skills",
     "docs",
+    "!docs/research",
+    "!docs/2026-*",
     "scripts",
+    "!scripts/research",
     "README.md",
     "LICENSE",
     "CHANGELOG.md"

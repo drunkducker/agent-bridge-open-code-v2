@@ -7,6 +7,7 @@ import { runTracked, agents, endpointNames, AgentError } from '../index.js';
 import { globMatch, ConfigHolder } from './config.js';
 import { callId } from './tools/emulate.js';
 import { isInstalled } from '../core/readiness.js';
+import { BUILTIN_AGENTS } from '../core/catalog.js';
 import { RunOptions } from '../types/index.js';
 import { getProactiveQuotaStatus } from '../quota/proactive.js';
 import { withTimeout } from '../extras/doctor.js';
@@ -86,6 +87,8 @@ export function resolveModel(
   if ((mm = /^agy\/(.+)$/i.exec(m))) return done({ agent: 'agy', model: mm[1] });
   if ((mm = /^pi\/(.+)$/i.exec(m))) return done({ agent: 'pi', model: mm[1] });
   if ((mm = /^opencode\/(.+)$/i.exec(m))) return done({ agent: 'opencode', model: mm[1].includes('/') ? mm[1] : m });
+  if ((mm = /^([a-z][a-z0-9_]*)\/(.+)$/i.exec(m)) && (BUILTIN_AGENTS as readonly string[]).includes(mm[1].toLowerCase()))
+    return done({ agent: mm[1].toLowerCase(), model: mm[2] });
   const l = m.toLowerCase();
   if ((mm = /^([a-z][a-z0-9_]*)\/(.+)$/.exec(l)) && endpointNames().includes(mm[1]))
     return done({ agent: mm[1], model: m.slice(mm[1].length + 1) });
