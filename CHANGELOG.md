@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.6.0] - 2026-10-21
 
 ### Diagnostics
 - **`ab doctor` probes every agent:** it now covers every `BUILTIN_AGENTS` entry (adding `cursor`, `grok`, `gemini`, `devin`, `acp`) plus configured endpoints (`ollama` and custom). A missing CLI or an endpoint nothing listens on is `[skip]` (informational), so the exit code is 1 only for real problems: Node < 22, an installed agent whose `--live` call fails, or no usable agent at all (new `agents` check). An installed CLI with no login is a warning and not counted as usable. `--json` keeps its shape; it gains the `skip` status, a top-level `usable` list and `endpoint`/`reachable` fields for endpoints. New machine-independent `acceptance/doctor.test.mjs` (private `PATH`).

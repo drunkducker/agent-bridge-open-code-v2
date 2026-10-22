@@ -154,7 +154,7 @@ LiteLLM, OpenRouter-style gateways and similar tools are **provider proxies**: t
 AgentBridge's proxy is a **harness proxy**: the unit it routes to is an installed coding-agent CLI (Claude Code, Codex, ...), authenticated by the login that CLI already has. Each request is executed by spawning that CLI, not by calling the vendor's HTTP API. This exists for cases a provider proxy cannot cover:
 
 - **Subscription logins.** Claude and Codex plans are usable through their CLIs but not through the raw API. A provider proxy cannot use them; a harness proxy can. This may conflict with a provider's terms for consumer plans; read [Terms of service](#terms-of-service) before use.
-- **Harness behavior.** Each CLI brings its own agent loop, tools, sandbox and session handling. Agent mode (`/agent/v1`) lets the harness edit files in an isolated git worktree and returns a diff you apply explicitly.
+- **Harness behavior.** Each CLI brings its own agent loop, tools, sandbox and session handling. Agent mode (`/agent/v1`) lets the harness edit files in an isolated git worktree and returns a diff you apply explicitly. Callers that already isolate their own work (an optimizer running one evaluation per folder, for example) can send `x-ab-sandbox: none` to run the harness directly in the folder instead.
 - **One surface for existing software.** Tools that only speak the OpenAI or Anthropic protocol (SDKs, notebooks, evaluation and optimization frameworks, editors) can use any installed harness, with the same fallback and quota policy as the CLI.
 
 What follows from this design, stated plainly:
