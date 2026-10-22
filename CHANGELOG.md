@@ -1,10 +1,5 @@
 # Changelog
 
-## [Unreleased]
-
-### Fixes
-- **Client tools with `claude/*` in the proxy API mode:** the native tool bridge (`mcpServers` for the `client_tools` MCP stub) was built but never handed to the Claude CLI outside agent mode, so the model answered that the tool was unavailable. It is now forwarded; verified live with `claude/haiku` and covered by `acceptance/proxy-tool-bridge.test.mjs`.
-
 ## [0.6.0] - 2026-10-21
 
 ### Diagnostics
@@ -16,6 +11,7 @@
 - `fanout` defaults to 8 concurrent workers instead of one per task; `listModels` is single-flight with stale-while-revalidate; live quota readings are cached ~20 s with in-flight sharing (`AGENTBRIDGE_QUOTA_CACHE_MS`, `0` disables).
 
 ### Fixes
+- **Client tools with `claude/*` in the proxy API mode:** the native tool bridge (`mcpServers` for the `client_tools` MCP stub) was built but never handed to the Claude CLI outside agent mode, so the model answered that the tool was unavailable. It is now forwarded; verified live with `claude/haiku` and covered by `acceptance/proxy-tool-bridge.test.mjs`.
 - Proxy: `resolveModel` routes `cursor/`, `gemini/`, `grok/`, `devin/` and `acp/` models to their own adapter (they used to fall through to opencode); agents without a system-prompt flag (cursor, gemini, devin, grok, acp) now receive the proxy system prompt folded into the prompt; the `NO_TOOLS` instruction is injected once and no longer forbids client-supplied tools.
 - `/v1/models` no longer lists cursor/gemini/grok/devin models when their CLI is not installed.
 - OpenCode: readiness no longer depends on `auth.json` (providers can authenticate by config/env); OpenCode v2 is detected and reported as unsupported; the version check is cached per binary. `ab doctor` no longer marks opencode as not logged in just because `auth.json` is absent.
