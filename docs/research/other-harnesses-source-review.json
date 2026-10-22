@@ -1,0 +1,72 @@
+{
+  "reviewDate": "2026-10-21",
+  "agentbridgeHead": "dabb7e2",
+  "cliProxyApiCommit": "0db19025571684b198a2ef508f99b41c717337e8",
+  "upstreamInstalledOrExecuted": false,
+  "newCodexInferenceCalls": 0,
+  "productionFilesChanged": false,
+  "credentialTokensReadByExperiment": false,
+  "claude": {
+    "executor": "internal/runtime/executor/claude_executor_stream.go",
+    "authAndRequest": "internal/runtime/executor/claude_executor_request.go",
+    "translatorRequest": "internal/translator/claude/openai/chat-completions/claude_openai_request.go",
+    "translatorResponse": "internal/translator/claude/openai/chat-completions/claude_openai_response.go",
+    "algorithm": "Maps messages/tools/results to Anthropic Messages, tool_use/tool_result/input_schema. Supports credential-dependent API-key/Bearer profiles and CLI compatibility fingerprints. Text deltas are forwarded; input_json_delta fragments are accumulated and the Chat Completions translator emits complete arguments at content_block_stop.",
+    "directImplemented": false,
+    "reason": "No independent authorized API credential was established for this subscription experiment. Do not replay the subscription OAuth token outside the official binary.",
+    "primaryProviderSource": "https://code.claude.com/docs/en/legal-and-compliance#authentication-and-credential-use"
+  },
+  "agy": {
+    "executor": "internal/runtime/executor/antigravity_executor.go",
+    "translatorRequest": "internal/translator/antigravity/openai/chat-completions/antigravity_openai_request.go",
+    "translatorResponse": "internal/translator/antigravity/openai/chat-completions/antigravity_openai_response.go",
+    "algorithm": "Uses private Cloud Code v1internal generation routes, OAuth credentials and provider-specific request identity/project handling. Maps messages to contents, tools to functionDeclarations, results to functionResponse. Maps functionCall.args from response parts into OpenAI tool_calls; this is not evidence of progressively streamed argument fragments.",
+    "directImplemented": false,
+    "reason": "Provider terms/FAQ restrict third-party access and warn of suspension. The FAQ also says headless wrapping is unsupported on consumer plans. Local official-binary measurements do not establish deployment permission.",
+    "primaryProviderSources": [
+      "https://antigravity.google/terms",
+      "https://www.antigravity.google/docs/faq/",
+      "https://www.antigravity.google/docs/cli/headless/"
+    ]
+  },
+  "opencode": {
+    "dedicatedCliProxyExecutorFound": false,
+    "algorithm": "OpenCode is a provider router. An OpenAI-compatible executor can target an independently authorized provider endpoint, but is not a generic replay of an OpenCode login. The selected free Zen GLM route is tested through the official v2 server without enabling native tools or bypassing provider checks.",
+    "directImplemented": false,
+    "reason": "No independently authorized API credential for the selected free model was established; no new key/login/model substitution is allowed in this study.",
+    "primaryProviderSources": [
+      "https://opencode.ai/docs/zen",
+      "https://opencode.ai/legal/terms-of-service",
+      "https://opencode.ai/v2/docs/api"
+    ]
+  },
+  "persistentProcessCleanup": {
+    "claude": {
+      "persistentPids": [
+        1124056
+      ],
+      "survivingPersistentPids": []
+    },
+    "agy": {
+      "persistentPids": [
+        1155403,
+        1200625
+      ],
+      "survivingPersistentPids": []
+    },
+    "opencode": {
+      "pidTrackingAvailable": false,
+      "cleanupMechanism": "startV2.close awaited child exit for the main private server and the diagnostic private server"
+    }
+  },
+  "cleanup": {
+    "temporaryBuildWorktreeRemoved": true,
+    "temporaryUpstreamCloneRemoved": true,
+    "productionDiffEmpty": true
+  },
+  "cliVersionsObserved": {
+    "claude": "2.1.307",
+    "agy": "1.4.4",
+    "opencode": "2.1.2"
+  }
+}

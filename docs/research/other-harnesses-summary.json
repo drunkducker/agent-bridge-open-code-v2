@@ -1,0 +1,178 @@
+{
+  "claude": {
+    "current": {
+      "exactAttempts": 3,
+      "exactCorrect": 3,
+      "exactAttemptMs": [
+        3483.603138,
+        2476.152752,
+        3090.5540949999995
+      ],
+      "medianAttemptMs": 3090.5540949999995,
+      "medianSuccessfulMs": 3090.5540949999995,
+      "medianFirstTextSuccessfulMs": 2124.2901820000006,
+      "exactTextDeltas": [
+        1,
+        1,
+        1
+      ],
+      "verification": {
+        "passed": 3,
+        "attempted": 4,
+        "expected": 5,
+        "allExpectedCompleted": false
+      },
+      "cycle": {
+        "correct": false,
+        "calls": 1,
+        "secondCall": "not performed because no valid client tool call was emitted"
+      }
+    },
+    "persistent": {
+      "exactAttempts": 3,
+      "exactCorrect": 3,
+      "exactAttemptMs": [
+        1887.4065300000002,
+        1048.9064960000005,
+        1244.1933399999998
+      ],
+      "medianAttemptMs": 1244.1933399999998,
+      "medianSuccessfulMs": 1244.1933399999998,
+      "medianFirstTextSuccessfulMs": 962.9050330000009,
+      "exactTextDeltas": [
+        1,
+        1,
+        1
+      ],
+      "verification": {
+        "passed": 5,
+        "attempted": 5,
+        "expected": 5,
+        "allExpectedCompleted": true
+      },
+      "cycle": {
+        "totalMs": 2239.2198069999977,
+        "correct": true,
+        "fixtureRead": true,
+        "calls": 2
+      }
+    }
+  },
+  "agy": {
+    "current": {
+      "exactAttempts": 3,
+      "exactCorrect": 2,
+      "exactAttemptMs": [
+        90319.560129,
+        5581.751084999996,
+        6769.967051000014
+      ],
+      "medianAttemptMs": 6769.967051000014,
+      "medianSuccessfulMs": 6175.859068000005,
+      "medianFirstTextSuccessfulMs": 5679.278615000003,
+      "exactTextDeltas": [
+        null,
+        2,
+        2
+      ],
+      "verification": {
+        "passed": 2,
+        "attempted": 4,
+        "expected": 5,
+        "allExpectedCompleted": false
+      },
+      "cycle": {
+        "correct": false,
+        "calls": 1,
+        "secondCall": "not performed because no valid client tool call was emitted"
+      }
+    },
+    "persistent": {
+      "exactAttempts": 3,
+      "exactCorrect": 2,
+      "exactAttemptMs": [
+        65579.499157,
+        1981.7354209999903,
+        90007.123143
+      ],
+      "medianAttemptMs": 65579.499157,
+      "medianSuccessfulMs": 33780.617288999994,
+      "medianFirstTextSuccessfulMs": 33728.38828000001,
+      "exactTextDeltas": [
+        3,
+        3,
+        null
+      ],
+      "verification": {
+        "passed": 4,
+        "attempted": 5,
+        "expected": 5,
+        "allExpectedCompleted": false
+      },
+      "cycle": {
+        "totalMs": 6833.800570000021,
+        "correct": true,
+        "fixtureRead": true,
+        "calls": 2
+      }
+    }
+  },
+  "opencode": {
+    "current": {
+      "exactAttempts": 3,
+      "exactCorrect": 0,
+      "exactAttemptMs": [
+        123.42645400000015,
+        5.614430000000084,
+        5.1589789999998175
+      ],
+      "medianAttemptMs": 5.614430000000084,
+      "medianSuccessfulMs": null,
+      "medianFirstTextSuccessfulMs": null,
+      "exactTextDeltas": [
+        null,
+        null,
+        null
+      ],
+      "verification": {
+        "passed": 0,
+        "attempted": 4,
+        "expected": 5,
+        "allExpectedCompleted": false
+      },
+      "cycle": {
+        "correct": false,
+        "calls": 1,
+        "secondCall": "not performed because no valid client tool call was emitted"
+      }
+    },
+    "persistent": {
+      "exactAttempts": 3,
+      "exactCorrect": 0,
+      "exactAttemptMs": [
+        758.4055900000001,
+        193.76421000000005,
+        187.12046899999996
+      ],
+      "medianAttemptMs": 193.76421000000005,
+      "medianSuccessfulMs": null,
+      "medianFirstTextSuccessfulMs": null,
+      "exactTextDeltas": [
+        null,
+        null,
+        null
+      ],
+      "verification": {
+        "passed": 0,
+        "attempted": 4,
+        "expected": 5,
+        "allExpectedCompleted": false
+      },
+      "cycle": {
+        "correct": false,
+        "calls": 1,
+        "secondCall": "not performed because no valid client tool call was emitted"
+      }
+    }
+  }
+}

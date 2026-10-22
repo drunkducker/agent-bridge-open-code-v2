@@ -1,0 +1,310 @@
+{
+  "date": "2026-10-22T01:12:23.279Z",
+  "harness": "claude",
+  "model": "haiku",
+  "agentbridgeHead": "dabb7e2",
+  "upstream": "router-for-me/CLIProxyAPI@0db19025571684b198a2ef508f99b41c717337e8",
+  "status": "complete",
+  "calls": [
+    {
+      "path": "current",
+      "task": "exact-1",
+      "text": "PONTE_OK",
+      "tool_calls": [],
+      "textDeltas": 1,
+      "toolDeltas": 0,
+      "argumentDeltas": 0,
+      "firstTextMs": 2462.398767,
+      "firstToolMs": null,
+      "firstArgumentMs": null,
+      "terminal": true,
+      "finishReason": "stop",
+      "usage": {
+        "prompt_tokens": 4296,
+        "completion_tokens": 9,
+        "total_tokens": 4305
+      },
+      "totalMs": 3483.603138,
+      "correct": true
+    },
+    {
+      "path": "persistent",
+      "task": "exact-1",
+      "text": "PONTE_OK",
+      "tool_calls": [],
+      "textDeltas": 1,
+      "toolDeltas": 0,
+      "argumentDeltas": 0,
+      "firstTextMs": 1596.1766069999994,
+      "firstToolMs": null,
+      "firstArgumentMs": null,
+      "terminal": true,
+      "finishReason": "stop",
+      "usage": {
+        "prompt_tokens": 3681,
+        "completion_tokens": 9,
+        "total_tokens": 3690
+      },
+      "totalMs": 1887.4065300000002,
+      "correct": true
+    },
+    {
+      "path": "persistent",
+      "task": "exact-2",
+      "text": "PONTE_OK",
+      "tool_calls": [],
+      "textDeltas": 1,
+      "toolDeltas": 0,
+      "argumentDeltas": 0,
+      "firstTextMs": 853.4957679999998,
+      "firstToolMs": null,
+      "firstArgumentMs": null,
+      "terminal": true,
+      "finishReason": "stop",
+      "usage": {
+        "prompt_tokens": 3731,
+        "completion_tokens": 9,
+        "total_tokens": 3740
+      },
+      "totalMs": 1048.9064960000005,
+      "correct": true
+    },
+    {
+      "path": "current",
+      "task": "exact-2",
+      "text": "PONTE_OK",
+      "tool_calls": [],
+      "textDeltas": 1,
+      "toolDeltas": 0,
+      "argumentDeltas": 0,
+      "firstTextMs": 1473.604025999999,
+      "firstToolMs": null,
+      "firstArgumentMs": null,
+      "terminal": true,
+      "finishReason": "stop",
+      "usage": {
+        "prompt_tokens": 4296,
+        "completion_tokens": 9,
+        "total_tokens": 4305
+      },
+      "totalMs": 2476.152752,
+      "correct": true
+    },
+    {
+      "path": "current",
+      "task": "exact-3",
+      "text": "PONTE_OK",
+      "tool_calls": [],
+      "textDeltas": 1,
+      "toolDeltas": 0,
+      "argumentDeltas": 0,
+      "firstTextMs": 2124.2901820000006,
+      "firstToolMs": null,
+      "firstArgumentMs": null,
+      "terminal": true,
+      "finishReason": "stop",
+      "usage": {
+        "prompt_tokens": 4296,
+        "completion_tokens": 9,
+        "total_tokens": 4305
+      },
+      "totalMs": 3090.5540949999995,
+      "correct": true
+    },
+    {
+      "path": "persistent",
+      "task": "exact-3",
+      "text": "PONTE_OK",
+      "tool_calls": [],
+      "textDeltas": 1,
+      "toolDeltas": 0,
+      "argumentDeltas": 0,
+      "firstTextMs": 962.9050330000009,
+      "firstToolMs": null,
+      "firstArgumentMs": null,
+      "terminal": true,
+      "finishReason": "stop",
+      "usage": {
+        "prompt_tokens": 3781,
+        "completion_tokens": 9,
+        "total_tokens": 3790
+      },
+      "totalMs": 1244.1933399999998,
+      "correct": true
+    },
+    {
+      "path": "current",
+      "task": "stock-tool",
+      "text": "Não consegui consultar o estoque do SKU CANECA-AZUL: a ferramenta `consultar_estoque` não está disponível nesta sessão. Por isso não tenho a quantidade. Se você habilitar essa ferramenta ou me passar o número, eu respondo no formato pedido.",
+      "tool_calls": [],
+      "textDeltas": 1,
+      "toolDeltas": 0,
+      "argumentDeltas": 0,
+      "firstTextMs": 4433.000288000001,
+      "firstToolMs": null,
+      "firstArgumentMs": null,
+      "terminal": true,
+      "finishReason": "stop",
+      "usage": {
+        "prompt_tokens": 9029,
+        "completion_tokens": 256,
+        "total_tokens": 9285
+      },
+      "totalMs": 4433.055481000001,
+      "correct": false
+    },
+    {
+      "path": "persistent",
+      "task": "stock-tool",
+      "text": "",
+      "tool_calls": [
+        {
+          "id": "call_ab98170fe80e918106fdf936",
+          "type": "function",
+          "function": {
+            "name": "consultar_estoque",
+            "arguments": "{\"sku\":\"CANECA-AZUL\"}"
+          }
+        }
+      ],
+      "textDeltas": 0,
+      "toolDeltas": 2,
+      "argumentDeltas": 1,
+      "firstTextMs": null,
+      "firstToolMs": 1146.3236609999985,
+      "firstArgumentMs": 1146.348403,
+      "terminal": true,
+      "finishReason": "tool_calls",
+      "usage": {
+        "prompt_tokens": 4295,
+        "completion_tokens": 50,
+        "total_tokens": 4345
+      },
+      "totalMs": 1146.4122839999982,
+      "correct": true
+    },
+    {
+      "path": "persistent",
+      "task": "stock-result",
+      "text": "Estoque: 17 unidades.",
+      "tool_calls": [],
+      "textDeltas": 2,
+      "toolDeltas": 0,
+      "argumentDeltas": 0,
+      "firstTextMs": 841.9487119999976,
+      "firstToolMs": null,
+      "firstArgumentMs": null,
+      "terminal": true,
+      "finishReason": "stop",
+      "usage": {
+        "prompt_tokens": 4609,
+        "completion_tokens": 14,
+        "total_tokens": 4623
+      },
+      "totalMs": 1092.8075229999995,
+      "correct": true
+    }
+  ],
+  "direct": {
+    "implemented": false,
+    "measured": false,
+    "reason": "Existing subscription login is not treated as an API key. OAuth replay outside the official binary was not authorized by provider documentation.",
+    "source": "https://code.claude.com/docs/en/legal-and-compliance#authentication-and-credential-use"
+  },
+  "limitations": [
+    "Production Claude uses the native MCP client-tool bridge; injected adapter selection uses prompt emulation. Tool-path differences are not pure process overhead.",
+    "Persistent CLI is a sequential continuous conversation, not independent stateless requests. No production pooling/isolation claim."
+  ],
+  "semantics": "current is production API; persistent is injected and retains conversation (stdio) or returns buffered generation (OpenCode). No production changes.",
+  "expected": {
+    "exact": "PONTE_OK",
+    "stock": "Estoque: 17 unidades."
+  },
+  "currentCycle": {
+    "correct": false,
+    "calls": 1,
+    "secondCall": "not performed because no valid client tool call was emitted"
+  },
+  "persistentCycle": {
+    "totalMs": 2239.2198069999977,
+    "correct": true,
+    "fixtureRead": true,
+    "calls": 2
+  },
+  "persistentTransport": {
+    "transport": "official CLI stream-json stdin kept open",
+    "spawns": 1,
+    "turns": 5,
+    "pids": [
+      1124056
+    ],
+    "retainsConversation": true,
+    "nativeTextDeltas": 11,
+    "nativeArgumentDeltas": 0,
+    "isolation": "prototype retains context across requests; not a stateless production pool"
+  },
+  "verification": {
+    "current": {
+      "passed": 3,
+      "attempted": 4,
+      "expected": 5,
+      "allExpectedCompleted": false
+    },
+    "persistent": {
+      "passed": 5,
+      "attempted": 5,
+      "expected": 5,
+      "allExpectedCompleted": true
+    }
+  },
+  "temporaryWorkspaceRemoved": true,
+  "currentDispatchDiagnostic": {
+    "offline": true,
+    "mcpServerNames": [],
+    "extraArgs": [
+      "--tools",
+      ""
+    ],
+    "hasToolSchemasInSystem": false,
+    "hasBridgeInstructions": true
+  },
+  "spawnEmulationControl": {
+    "experimental": true,
+    "changes": "injected adapter selects textual client-tool emulation; process still respawned per request",
+    "calls": [
+      {
+        "task": "stock-tool",
+        "text": "",
+        "tool_calls": [
+          {
+            "id": "call_e9743e5ba8bc384d0c7f3146",
+            "type": "function",
+            "function": {
+              "name": "consultar_estoque",
+              "arguments": "{\"sku\":\"CANECA-AZUL\"}"
+            }
+          }
+        ],
+        "textDeltas": 0,
+        "argumentDeltas": 1,
+        "firstArgumentMs": 2240.004487,
+        "finishReason": "tool_calls",
+        "totalMs": 2240.140633,
+        "correct": true
+      },
+      {
+        "task": "stock-result",
+        "text": "Estoque: 17 unidades.",
+        "tool_calls": [],
+        "textDeltas": 2,
+        "argumentDeltas": 0,
+        "firstArgumentMs": null,
+        "finishReason": "stop",
+        "totalMs": 3342.853038,
+        "correct": true
+      }
+    ],
+    "correct": true,
+    "totalMs": 5582.993671
+  }
+}

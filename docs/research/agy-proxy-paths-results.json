@@ -1,0 +1,238 @@
+{
+  "date": "2026-10-22T01:13:53.153Z",
+  "harness": "agy",
+  "model": "gemini-3.8-flash-low",
+  "agentbridgeHead": "dabb7e2",
+  "upstream": "router-for-me/CLIProxyAPI@0db19025571684b198a2ef508f99b41c717337e8",
+  "status": "complete",
+  "calls": [
+    {
+      "path": "current",
+      "task": "exact-1",
+      "error": "AgentBridge HTTP 504: timeout",
+      "evidence": {
+        "status": 504,
+        "code": "timeout",
+        "message": "agy timed out after 90000ms"
+      },
+      "totalMs": 90319.560129,
+      "correct": false
+    },
+    {
+      "path": "persistent",
+      "task": "exact-1",
+      "text": "PONTE_OK\n",
+      "tool_calls": [],
+      "textDeltas": 3,
+      "toolDeltas": 0,
+      "argumentDeltas": 0,
+      "firstTextMs": 65527.80443100001,
+      "firstToolMs": null,
+      "firstArgumentMs": null,
+      "terminal": true,
+      "finishReason": "stop",
+      "usage": {
+        "prompt_tokens": 6780,
+        "completion_tokens": 4,
+        "total_tokens": 6784
+      },
+      "totalMs": 65579.499157,
+      "correct": true
+    },
+    {
+      "path": "persistent",
+      "task": "exact-2",
+      "text": "PONTE_OK\n",
+      "tool_calls": [],
+      "textDeltas": 3,
+      "toolDeltas": 0,
+      "argumentDeltas": 0,
+      "firstTextMs": 1928.9721290000016,
+      "firstToolMs": null,
+      "firstArgumentMs": null,
+      "terminal": true,
+      "finishReason": "stop",
+      "usage": {
+        "prompt_tokens": 6859,
+        "completion_tokens": 4,
+        "total_tokens": 6863
+      },
+      "totalMs": 1981.7354209999903,
+      "correct": true
+    },
+    {
+      "path": "current",
+      "task": "exact-2",
+      "text": "PONTE_OK\n",
+      "tool_calls": [],
+      "textDeltas": 2,
+      "toolDeltas": 0,
+      "argumentDeltas": 0,
+      "firstTextMs": 5011.920096000016,
+      "firstToolMs": null,
+      "firstArgumentMs": null,
+      "terminal": true,
+      "finishReason": "stop",
+      "usage": {
+        "prompt_tokens": 6774,
+        "completion_tokens": 4,
+        "total_tokens": 6778
+      },
+      "totalMs": 5581.751084999996,
+      "correct": true
+    },
+    {
+      "path": "current",
+      "task": "exact-3",
+      "text": "PONTE_OK\n",
+      "tool_calls": [],
+      "textDeltas": 2,
+      "toolDeltas": 0,
+      "argumentDeltas": 0,
+      "firstTextMs": 6346.63713399999,
+      "firstToolMs": null,
+      "firstArgumentMs": null,
+      "terminal": true,
+      "finishReason": "stop",
+      "usage": {
+        "prompt_tokens": 6783,
+        "completion_tokens": 4,
+        "total_tokens": 6787
+      },
+      "totalMs": 6769.967051000014,
+      "correct": true
+    },
+    {
+      "path": "persistent",
+      "task": "exact-3",
+      "error": "AgentBridge HTTP 502: agent_failed",
+      "evidence": {
+        "status": 502,
+        "code": "agent_failed",
+        "message": "Persistent turn timed out"
+      },
+      "totalMs": 90007.123143,
+      "correct": false
+    },
+    {
+      "path": "current",
+      "task": "stock-tool",
+      "error": "AgentBridge HTTP 504: timeout",
+      "evidence": {
+        "status": 504,
+        "code": "timeout",
+        "message": "agy timed out after 90000ms"
+      },
+      "totalMs": 90274.345042,
+      "correct": false
+    },
+    {
+      "path": "persistent",
+      "task": "stock-tool",
+      "text": "",
+      "tool_calls": [
+        {
+          "id": "call_3b2184620ad47cb8665c44ee",
+          "type": "function",
+          "function": {
+            "name": "consultar_estoque",
+            "arguments": "{\"sku\":\"CANECA-AZUL\"}"
+          }
+        }
+      ],
+      "textDeltas": 0,
+      "toolDeltas": 2,
+      "argumentDeltas": 1,
+      "firstTextMs": null,
+      "firstToolMs": 4232.356047999987,
+      "firstArgumentMs": 4232.393879999989,
+      "terminal": true,
+      "finishReason": "tool_calls",
+      "usage": {
+        "prompt_tokens": 7022,
+        "completion_tokens": 34,
+        "total_tokens": 7056
+      },
+      "totalMs": 4232.4610770000145,
+      "correct": true
+    },
+    {
+      "path": "persistent",
+      "task": "stock-result",
+      "text": "Estoque: 17 unidades.\n",
+      "tool_calls": [],
+      "textDeltas": 2,
+      "toolDeltas": 0,
+      "argumentDeltas": 0,
+      "firstTextMs": 2551.021794,
+      "firstToolMs": null,
+      "firstArgumentMs": null,
+      "terminal": true,
+      "finishReason": "stop",
+      "usage": {
+        "prompt_tokens": 7375,
+        "completion_tokens": 8,
+        "total_tokens": 7383
+      },
+      "totalMs": 2601.3394930000068,
+      "correct": true
+    }
+  ],
+  "direct": {
+    "implemented": false,
+    "measured": false,
+    "reason": "Private v1internal endpoints and OAuth replay are not an authorized third-party API under the documented consumer terms. No token extracted.",
+    "sources": [
+      "https://antigravity.google/terms",
+      "https://www.antigravity.google/docs/faq/"
+    ]
+  },
+  "limitations": [
+    "Official documentation also says wrapping headless agy in third-party applications is unsupported under consumer plans. These local measurements do not establish permission for deployment.",
+    "Persistent stream-json stdin is documented, retains conversation, and does not expose progressive native client-tool arguments."
+  ],
+  "semantics": "current is production API; persistent is injected and retains conversation (stdio) or returns buffered generation (OpenCode). No production changes.",
+  "expected": {
+    "exact": "PONTE_OK",
+    "stock": "Estoque: 17 unidades."
+  },
+  "currentCycle": {
+    "correct": false,
+    "calls": 1,
+    "secondCall": "not performed because no valid client tool call was emitted"
+  },
+  "persistentCycle": {
+    "totalMs": 6833.800570000021,
+    "correct": true,
+    "fixtureRead": true,
+    "calls": 2
+  },
+  "persistentTransport": {
+    "transport": "official CLI stream-json stdin kept open",
+    "spawns": 2,
+    "turns": 4,
+    "pids": [
+      1155403,
+      1200625
+    ],
+    "retainsConversation": true,
+    "nativeTextDeltas": 12,
+    "nativeArgumentDeltas": 0,
+    "isolation": "prototype retains context across requests; not a stateless production pool"
+  },
+  "verification": {
+    "current": {
+      "passed": 2,
+      "attempted": 4,
+      "expected": 5,
+      "allExpectedCompleted": false
+    },
+    "persistent": {
+      "passed": 4,
+      "attempted": 5,
+      "expected": 5,
+      "allExpectedCompleted": false
+    }
+  },
+  "temporaryWorkspaceRemoved": true
+}

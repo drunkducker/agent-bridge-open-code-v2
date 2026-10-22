@@ -1,0 +1,211 @@
+{
+  "date": "2026-10-22T01:19:52.169Z",
+  "harness": "opencode",
+  "model": "opencode/glm-5.3-flash-free",
+  "agentbridgeHead": "dabb7e2",
+  "upstream": "router-for-me/CLIProxyAPI@0db19025571684b198a2ef508f99b41c717337e8",
+  "status": "complete",
+  "calls": [
+    {
+      "path": "current",
+      "task": "exact-1",
+      "error": "AgentBridge HTTP 400: bad_option",
+      "evidence": {
+        "status": 400,
+        "code": "bad_option",
+        "message": "OpenCode v2 API is not supported by this adapter yet (it uses the v1 protocol). Missing auth.json does not imply a missing login; logging in again will not fix this protocol incompatibility."
+      },
+      "totalMs": 123.42645400000015,
+      "correct": false
+    },
+    {
+      "path": "persistent",
+      "task": "exact-1",
+      "error": "AgentBridge HTTP 502: agent_failed",
+      "evidence": {
+        "status": 502,
+        "code": "agent_failed",
+        "message": "OpenCode v2 HTTP 503: ServiceUnavailableError"
+      },
+      "totalMs": 758.4055900000001,
+      "correct": false
+    },
+    {
+      "path": "persistent",
+      "task": "exact-2",
+      "error": "AgentBridge HTTP 502: agent_failed",
+      "evidence": {
+        "status": 502,
+        "code": "agent_failed",
+        "message": "OpenCode v2 HTTP 503: ServiceUnavailableError"
+      },
+      "totalMs": 193.76421000000005,
+      "correct": false
+    },
+    {
+      "path": "current",
+      "task": "exact-2",
+      "error": "AgentBridge HTTP 400: bad_option",
+      "evidence": {
+        "status": 400,
+        "code": "bad_option",
+        "message": "OpenCode v2 API is not supported by this adapter yet (it uses the v1 protocol). Missing auth.json does not imply a missing login; logging in again will not fix this protocol incompatibility."
+      },
+      "totalMs": 5.614430000000084,
+      "correct": false
+    },
+    {
+      "path": "current",
+      "task": "exact-3",
+      "error": "AgentBridge HTTP 400: bad_option",
+      "evidence": {
+        "status": 400,
+        "code": "bad_option",
+        "message": "OpenCode v2 API is not supported by this adapter yet (it uses the v1 protocol). Missing auth.json does not imply a missing login; logging in again will not fix this protocol incompatibility."
+      },
+      "totalMs": 5.1589789999998175,
+      "correct": false
+    },
+    {
+      "path": "persistent",
+      "task": "exact-3",
+      "error": "AgentBridge HTTP 502: agent_failed",
+      "evidence": {
+        "status": 502,
+        "code": "agent_failed",
+        "message": "OpenCode v2 HTTP 503: ServiceUnavailableError"
+      },
+      "totalMs": 187.12046899999996,
+      "correct": false
+    },
+    {
+      "path": "current",
+      "task": "stock-tool",
+      "error": "AgentBridge HTTP 400: bad_option",
+      "evidence": {
+        "status": 400,
+        "code": "bad_option",
+        "message": "OpenCode v2 API is not supported by this adapter yet (it uses the v1 protocol). Missing auth.json does not imply a missing login; logging in again will not fix this protocol incompatibility."
+      },
+      "totalMs": 3.517916000000241,
+      "correct": false
+    },
+    {
+      "path": "persistent",
+      "task": "stock-tool",
+      "error": "AgentBridge HTTP 502: agent_failed",
+      "evidence": {
+        "status": 502,
+        "code": "agent_failed",
+        "message": "OpenCode v2 HTTP 503: ServiceUnavailableError"
+      },
+      "totalMs": 202.5069370000001,
+      "correct": false
+    }
+  ],
+  "direct": {
+    "implemented": false,
+    "measured": false,
+    "reason": "OpenCode is a multi-provider router. The selected free Zen model has no independently authorized API credential identified in this experiment; no CLI-only free-tier restriction is bypassed.",
+    "sources": [
+      "https://opencode.ai/docs/zen",
+      "https://opencode.ai/legal/terms-of-service"
+    ]
+  },
+  "limitations": [
+    "Production v0.6.0 adapter is v1-only. A v2 rejection is an actual result, not an inference latency.",
+    "Persistent experimental adapter uses the v2 generate route with no native tools and buffers its JSON response. If the free provider rejects this mode, the rejection is preserved."
+  ],
+  "semantics": "current is production API; persistent is injected and retains conversation (stdio) or returns buffered generation (OpenCode). No production changes.",
+  "expected": {
+    "exact": "PONTE_OK",
+    "stock": "Estoque: 17 unidades."
+  },
+  "selectedModel": {
+    "providerID": "opencode",
+    "id": "glm-5.3-flash-free",
+    "enabled": true
+  },
+  "currentCycle": {
+    "correct": false,
+    "calls": 1,
+    "secondCall": "not performed because no valid client tool call was emitted"
+  },
+  "persistentCycle": {
+    "correct": false,
+    "calls": 1,
+    "secondCall": "not performed because no valid client tool call was emitted"
+  },
+  "persistentTransport": {
+    "transport": "OpenCode v2 private HTTP server /api/experimental/generate",
+    "version": "2.1.2",
+    "startupMs": 339.747849,
+    "spawns": 1,
+    "requests": 4,
+    "buffered": true,
+    "retainsConversation": false
+  },
+  "verification": {
+    "current": {
+      "passed": 0,
+      "attempted": 4,
+      "expected": 5,
+      "allExpectedCompleted": false
+    },
+    "persistent": {
+      "passed": 0,
+      "attempted": 4,
+      "expected": 5,
+      "allExpectedCompleted": false
+    }
+  },
+  "temporaryWorkspaceRemoved": true,
+  "routeDiagnostics": [
+    {
+      "route": "generate",
+      "totalMs": 1055.0669159999998,
+      "error": "OpenCode v2 HTTP 503: ServiceUnavailableError",
+      "evidence": {
+        "status": 503,
+        "type": "ServiceUnavailableError",
+        "message": "OpenCode's free tier can only be used from within OpenCode. Download it at https://opencode.ai and keep building."
+      },
+      "correct": false
+    },
+    {
+      "route": "session-deny-all",
+      "totalMs": 4643.2822750000005,
+      "error": "OpenCode session failed: provider.auth,provider.auth",
+      "evidence": {
+        "assistantModels": [
+          {
+            "id": "glm-5.3-flash-free",
+            "providerID": "opencode",
+            "variant": "default"
+          }
+        ],
+        "assistantAgents": [
+          {
+            "agent": "build",
+            "finish": "error",
+            "errorType": "provider.auth"
+          }
+        ],
+        "outcome": "failed",
+        "errors": [
+          {
+            "type": "provider.auth",
+            "status": 403,
+            "message": "OpenCode's free tier can only be used from within OpenCode. Download it at https://opencode.ai and keep building."
+          },
+          {
+            "type": "provider.auth",
+            "status": 403,
+            "message": "OpenCode's free tier can only be used from within OpenCode. Download it at https://opencode.ai and keep building."
+          }
+        ]
+      },
+      "correct": false
+    }
+  ]
+}

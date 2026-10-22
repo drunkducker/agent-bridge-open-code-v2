@@ -452,7 +452,7 @@ export async function* runAgent(o: any): AsyncGenerator<{ type: string; delta: s
   if (known?.cwd && !isAgent && dispatchName === 'claude' && known.cwd !== base.cwd) known = undefined; // resume is cwd-scoped
   if (known && o.sessionKey) o.sessionOut = { id: known.id };
   if (model) base.model = model;
-  if (isAgent && o.mcpServers) base.mcpServers = o.mcpServers;
+  if (o.mcpServers) base.mcpServers = o.mcpServers; // agent mode, or the client-tool bridge in API mode
   if (o.images?.length) base.images = o.images;
   if (o.jsonSchema) base.jsonSchema = o.jsonSchema;
   if (!isAgent) {

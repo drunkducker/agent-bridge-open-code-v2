@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixes
+- **Client tools with `claude/*` in the proxy API mode:** the native tool bridge (`mcpServers` for the `client_tools` MCP stub) was built but never handed to the Claude CLI outside agent mode, so the model answered that the tool was unavailable. It is now forwarded; verified live with `claude/haiku` and covered by `acceptance/proxy-tool-bridge.test.mjs`.
+
 ## [0.6.0] - 2026-10-21
 
 ### Diagnostics
