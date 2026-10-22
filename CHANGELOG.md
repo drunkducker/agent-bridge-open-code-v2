@@ -10,6 +10,15 @@
 - **In-place agent mode:** `x-ab-sandbox: none` runs the agent directly in `x-ab-cwd` (inside `--agent-root`, token and permission ceiling still enforced), with no sandbox, diff/apply or run cap. For callers that isolate their own work.
 - `fanout` defaults to 8 concurrent workers instead of one per task; `listModels` is single-flight with stale-while-revalidate; live quota readings are cached ~20 s with in-flight sharing (`AGENTBRIDGE_QUOTA_CACHE_MS`, `0` disables).
 
+### Fixes
+- Proxy: `resolveModel` routes `cursor/`, `gemini/`, `grok/`, `devin/` and `acp/` models to their own adapter (they used to fall through to opencode); agents without a system-prompt flag (cursor, gemini, devin, grok, acp) now receive the proxy system prompt folded into the prompt; the `NO_TOOLS` instruction is injected once and no longer forbids client-supplied tools.
+- `/v1/models` no longer lists cursor/gemini/grok/devin models when their CLI is not installed.
+- OpenCode: readiness no longer depends on `auth.json` (providers can authenticate by config/env); OpenCode v2 is detected and reported as unsupported; the version check is cached per binary. `ab doctor` no longer marks opencode as not logged in just because `auth.json` is absent.
+- Codex app-server daemon: camelCase (`commandExecution`, `fileChange`) events are normalized.
+- Context windows (gemini, cursor, grok, devin) and install/login hints cover every builtin agent.
+- npm package excludes research files, dated reports and `scripts/research`.
+- Tests: proxy tests no longer read or write the real `~/.agentbridge/proxy-sessions.json`; `opencode-cleanup` runs in `npm test`.
+
 ### Resource safety
 - Resource bounds: `/api/stats` no longer blocks the event loop (async, bounded opencode exports, 3 s response cache with in-flight coalescing); age+count retention for telemetry sessions, endpoint sessions and read inbox messages (run at startup and daily; `ab sweep` reports per-category counts); Codex app-server daemon pool is LRU-capped and evicts on idle/close/exit; in-process session maps are LRU-bounded; MCP stdio and SSE lines are capped at 16 MB. See docs/TELEMETRY.md.
 - **Concurrent process cap:** `AGENTBRIDGE_MAX_PROCS` (default 24, `0` = unlimited) limits live agent processes per AgentBridge process. Beyond it, spawns fail with `RATE_LIMITED` (HTTP 429 with `retry-after` in the proxy) instead of exhausting RAM.

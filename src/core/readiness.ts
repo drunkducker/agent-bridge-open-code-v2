@@ -4,7 +4,7 @@ import { resolveBinary } from './spawn.js';
 import { findBinary as findAgy } from '../adapters/agy.js';
 import { findBinary as findPi } from '../adapters/pi.js';
 
-export const CLI_AGENTS = ['claude', 'codex', 'opencode', 'agy', 'pi'] as const;
+export const CLI_AGENTS = ['claude', 'codex', 'opencode', 'agy', 'pi', 'cursor', 'gemini', 'grok', 'devin'] as const;
 
 export function binaryOf(name: string): string | null {
   return name === 'agy' ? findAgy() : name === 'pi' ? findPi() : resolveBinary(name === 'cursor' ? 'cursor-agent' : name);

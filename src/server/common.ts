@@ -291,6 +291,9 @@ export function createLimiter({ maxTokens, stop = [] }: { maxTokens?: number; st
   };
 }
 
+/** Harness CLIs without a native system-prompt flag: the proxy prepends the system prompt to the user prompt. */
+const NO_SYSTEM_FLAG = new Set(['cursor', 'gemini', 'devin', 'grok', 'acp']);
+
 // ---------- prompt building ----------
 const NO_TOOLS =
   "You are a completion backend behind an API. Do NOT use the harness's own tools to read files, run commands or browse. " +
@@ -440,7 +443,7 @@ export async function* runAgent(o: any): AsyncGenerator<{ type: string; delta: s
     }
   }
   const base: any = {
-    systemPrompt: isAgent ? o.systemPrompt : [o.systemPrompt, NO_TOOLS].filter(Boolean).join('\n\n'),
+    systemPrompt: isAgent || o.systemPrompt?.includes(NO_TOOLS) ? o.systemPrompt : [o.systemPrompt, NO_TOOLS].filter(Boolean).join('\n\n'),
     cwd: isAgent ? o.cwd : keyedCwd || cwd,
     permissions: isAgent ? o.permissions || 'full' : 'read-only',
     signal: ac.signal,
@@ -473,6 +476,11 @@ export async function* runAgent(o: any): AsyncGenerator<{ type: string; delta: s
         ...(o.fallback?.length && !more ? { fallback: o.fallback } : {}),
         ...(effort ? { effort } : {}),
       };
+      if (!isAgent && NO_SYSTEM_FLAG.has(dispatchName || aname) && opts.systemPrompt) {
+        // These CLIs have no system-prompt flag (the adapter refuses or drops it): the proxy folds it into the prompt.
+        opts.prompt = `${opts.systemPrompt}\n\n${opts.prompt}`;
+        delete (opts as any).systemPrompt;
+      }
       const lim = createLimiter({ maxTokens: o.maxTokens, stop: o.stop });
       const toolCalls: any[] = [];
       let raw = '',

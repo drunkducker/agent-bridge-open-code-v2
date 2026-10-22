@@ -33,6 +33,25 @@ function assertInstalled(env: NodeJS.ProcessEnv): void {
   }
 }
 
+const versionCache = new Map<string, number>();
+/** Major version of the installed opencode, cached per resolved binary (one `--version` spawn, not one per run). */
+async function installedMajor(o: RunOptions): Promise<number> {
+  const key = resolveBinary(BIN, o.env || process.env) || BIN;
+  const hit = versionCache.get(key);
+  if (hit != null) return hit;
+  const version = await runCollect(BIN, ['--version'], {
+    env: minimalEnv(o.env), agent: 'opencode', signal: o.signal,
+    timeoutMs: o.timeoutMs || 10000,
+  });
+  if (version.aborted) throw new AgentError('ABORTED', 'Aborted', { agent: 'opencode' });
+  if (version.timedOut) throw new AgentError('TIMEOUT', 'opencode version check timed out', { agent: 'opencode' });
+  if (version.exitCode !== 0) throw fail('opencode version check failed', { exitCode: version.exitCode });
+  const m = /(?:^|\s)v?(\d+)\.\d+\.\d+/.exec(stripAnsi(version.stdout))?.[1];
+  if (!m) throw fail('Could not determine the installed OpenCode version');
+  versionCache.set(key, Number(m));
+  return Number(m);
+}
+
 // Minimal env allowlist
 const ENV_ALLOW = [
   'PATH',
@@ -398,16 +417,8 @@ const adapter: AgentAdapter & { _run: (o: RunOptions) => AsyncGenerator<AgentEve
     if (o.cwd && !existsSync(o.cwd)) throw bad(`cwd does not exist: ${o.cwd}`);
     // Credentials may come from provider configuration/environment, or be unnecessary for free models.
     // Let OpenCode authenticate; the presence of a legacy auth.json cannot establish readiness.
-    const version = await runCollect(BIN, ['--version'], {
-      env: minimalEnv(o.env), agent: 'opencode', signal: o.signal,
-      timeoutMs: o.timeoutMs || 10000,
-    });
-    if (version.aborted) throw new AgentError('ABORTED', 'Aborted', { agent: 'opencode' });
-    if (version.timedOut) throw new AgentError('TIMEOUT', 'opencode version check timed out', { agent: 'opencode' });
-    if (version.exitCode !== 0) throw fail('opencode version check failed', { exitCode: version.exitCode });
-    const major = /(?:^|\s)v?(\d+)\.\d+\.\d+/.exec(stripAnsi(version.stdout))?.[1];
-    if (!major) throw fail('Could not determine the installed OpenCode version');
-    if (Number(major) >= 2) {
+    const major = await installedMajor(o);
+    if (major >= 2) {
       throw bad('OpenCode v2 API is not supported by this adapter yet (it uses the v1 protocol). ' +
         'Missing auth.json does not imply a missing login; logging in again will not fix this protocol incompatibility.');
     }

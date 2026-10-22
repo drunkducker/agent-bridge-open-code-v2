@@ -30,9 +30,9 @@ import { QuotaPolicy, QuotaRouteCandidate, QuotaRouteSelection } from '../types/
 import { VERSION } from '../core/version.js';
 import { supportsProactiveQuota } from '../quota/proactive.js';
 
-const BUILTIN_AGENTS = ['claude', 'codex', 'opencode', 'agy', 'pi', 'cursor', 'grok', 'gemini', 'devin', 'acp'];
+import { BUILTIN_AGENTS } from '../core/catalog.js';
 const agentList = (env: NodeJS.ProcessEnv = process.env) => [...BUILTIN_AGENTS, ...endpointNames(env)];
-const isEndpoint = (a: string) => !BUILTIN_AGENTS.includes(a);
+const isEndpoint = (a: string) => !(BUILTIN_AGENTS as readonly string[]).includes(a);
 
 const RANK: Record<string, number> = { 'read-only': 0, plan: 1, edit: 2, full: 3 };
 export const DEFAULT_MODEL: Record<string, string> = {

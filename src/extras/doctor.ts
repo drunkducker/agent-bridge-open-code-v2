@@ -296,7 +296,8 @@ export async function doctor({
       const noOffline = !CRED[name];
       const cred = CRED[name]?.();
       a.credentials = cred ? path.basename(cred) : null;
-      a.loggedIn = noOffline ? null : !!cred;
+      // opencode can authenticate through provider config/env, so a missing auth.json is not proof of no login.
+      a.loggedIn = noOffline || (name === 'opencode' && !cred) ? null : !!cred;
       if (models) {
         try {
           const { agents: reg } = await import('../index.js');
