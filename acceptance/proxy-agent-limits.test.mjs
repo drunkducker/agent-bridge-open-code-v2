@@ -151,7 +151,7 @@ test('stale cleanup removes only marked, old, dead-pid ab-wt-* dirs directly in 
   assert.ok(existsSync(path.join(T, 'ab-wt-FFFFFF')));
 });
 
-test('stale cleanup prunes the worktree registration in the origin repo', async () => {
+test('stale cleanup prunes the worktree registration in the origin repo', { skip: process.platform === 'win32' && 'POSIX path and pid assumptions' }, async () => {
   const repo = mkdtempSync(path.join(T, 'repo-'));
   const g = (...a) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...a], { cwd: repo, encoding: 'utf8' });
   g('init', '-q'); writeFileSync(path.join(repo, 'a.txt'), 'a\n'); g('add', '-A'); g('commit', '-q', '-m', 'init');

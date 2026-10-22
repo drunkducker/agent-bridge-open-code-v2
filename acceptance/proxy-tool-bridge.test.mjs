@@ -28,7 +28,7 @@ process.env.AGENTBRIDGE_HOME = path.join(dir, 'home');
 
 const { startProxy } = await import('../dist/server/index.js');
 
-test('claude API mode with client tools passes the bridge MCP server to the CLI', async () => {
+test('claude API mode with client tools passes the bridge MCP server to the CLI', { skip: process.platform === 'win32' && 'fake claude is a POSIX script' }, async () => {
   const p = await startProxy({ port: 0, sessionsFile: false });
   try {
     const tools = [{ type: 'function', function: { name: 'consultar_estoque', description: 'stock', parameters: { type: 'object', properties: { sku: { type: 'string' } } } } }];

@@ -48,7 +48,7 @@ test('--json keeps its shape and adds status skip + usable', { timeout: 60000 },
   assert.deepEqual(d.usable, []);
 });
 
-test('installed but not logged in: WARN, not usable; with a login it is usable and the run passes', { timeout: 60000 }, async () => {
+test('installed but not logged in: WARN, not usable; with a login it is usable and the run passes', { timeout: 60000, skip: process.platform === 'win32' && 'uses POSIX fake CLIs' }, async () => {
   const fake = path.join(bin, 'codex');
   writeFileSync(fake, '#!/bin/sh\necho "codex-cli 9.9.9"\n');
   chmodSync(fake, 0o755);
@@ -58,7 +58,7 @@ test('installed but not logged in: WARN, not usable; with a login it is usable a
   assert.match(r.o, /no usable agent/);
 });
 
-test('one installed CLI: missing others do not fail the run (exit 0)', { timeout: 60000 }, async () => {
+test('one installed CLI: missing others do not fail the run (exit 0)', { timeout: 60000, skip: process.platform === 'win32' && 'uses POSIX fake CLIs' }, async () => {
   const fake = path.join(bin, 'codex');
   writeFileSync(fake, '#!/bin/sh\necho "codex-cli 9.9.9"\n');
   chmodSync(fake, 0o755);
