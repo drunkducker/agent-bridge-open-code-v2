@@ -364,7 +364,10 @@ function sseQueue(resp: Response, onEnd?: () => void) {
 const errText = (e: any) =>
   stripAnsi(e?.data?.message || e?.message || e?.name || (typeof e === 'string' ? e : JSON.stringify(e ?? '')));
 
-const adapter: AgentAdapter & { _run: (o: RunOptions) => AsyncGenerator<AgentEvent, RunResult, void> } = {
+const adapter: AgentAdapter & {
+  _run: (o: RunOptions) => AsyncGenerator<AgentEvent, RunResult, void>;
+  runV2: (o: RunOptions) => AsyncGenerator<AgentEvent, RunResult, void>;
+} = {
   name: 'opencode',
 
   async models(): Promise<string[]> {
@@ -419,8 +422,7 @@ const adapter: AgentAdapter & { _run: (o: RunOptions) => AsyncGenerator<AgentEve
     // Let OpenCode authenticate; the presence of a legacy auth.json cannot establish readiness.
     const major = await installedMajor(o);
     if (major >= 2) {
-      throw bad('OpenCode v2 API is not supported by this adapter yet (it uses the v1 protocol). ' +
-        'Missing auth.json does not imply a missing login; logging in again will not fix this protocol incompatibility.');
+      return yield* this.runV2(o);
     }
     const variant = o.effort ? await resolveVariant(o.effort, o.model) : undefined;
     const [providerID, ...rest] = (o.model || '').split('/');
@@ -966,6 +968,138 @@ const adapter: AgentAdapter & { _run: (o: RunOptions) => AsyncGenerator<AgentEve
       timedOut: false,
       ...(json !== undefined ? { json } : {}),
     };
+  },
+
+  async *runV2(o: RunOptions): AsyncGenerator<AgentEvent, RunResult, void> {
+    const started = Date.now();
+    if (o.images?.length) throw bad('OpenCode v2 CLI mode does not support in-memory image attachments yet');
+    const userPrompt = o.jsonSchema ? o.prompt + schemaSuffix(o.jsonSchema) : o.prompt;
+    const prompt = o.systemPrompt
+      ? `System instructions:\n${o.systemPrompt}\n\nUser request:\n${userPrompt}`
+      : userPrompt;
+    const model = o.model || 'opencode/free';
+    const mode = o.session?.mode || 'new';
+    const cwd = path.resolve(o.cwd || process.cwd());
+    const args: string[] = ['run', '--standalone', '--format', 'json'];
+    if (o.permissions === 'edit' || o.permissions === 'full') {
+      args.push('--auto');
+    }
+    args.push('--model', model);
+    if (mode === 'continue' || mode === 'fork') {
+      if (!o.session?.id) {
+        throw bad(`session.mode "${mode}" requires session.id for v2 CLI`);
+      }
+      args.push('--session', o.session.id);
+      if (mode === 'fork') args.push('--fork');
+    }
+    if (o.extraArgs?.length) args.push(...o.extraArgs);
+    args.push(prompt);
+
+    const userCfg = (() => {
+      try {
+        return JSON.parse(o.env?.OPENCODE_CONFIG_CONTENT || '{}');
+      } catch {
+        return {};
+      }
+    })();
+    const cfg = buildConfig(o);
+    const config = {
+      ...userCfg,
+      ...cfg,
+      permission: { ...(userCfg.permission || {}), ...cfg.permission },
+      mcp: { ...(userCfg.mcp || {}), ...(cfg.mcp || {}) },
+    };
+    const env = minimalEnv({
+      ...(o.env || {}),
+      OPENCODE_CONFIG_CONTENT: JSON.stringify(config),
+    });
+    const proc = spawnProc(BIN, args, {
+      cwd,
+      env,
+      timeoutMs: o.timeoutMs,
+      signal: o.signal,
+      agent: 'opencode',
+    });
+
+    const usage: Usage = { input: 0, output: 0 };
+    let text = '';
+    let sessionId: string | undefined;
+    let sessionEmitted = false;
+    let json: any;
+    let waited = false;
+    try {
+      for await (const line of proc.lines) {
+        let event: any;
+        try {
+          event = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        if (typeof event.sessionID === 'string') sessionId = event.sessionID;
+        if (sessionId && !sessionEmitted) {
+          sessionEmitted = true;
+          yield ev.session(sessionId);
+        }
+        const part = event.part || {};
+        if (event.type === 'text' && typeof part.text === 'string') {
+          text += part.text;
+          yield ev.text(part.text);
+        } else if (event.type === 'tool_use') {
+          const state = part.state || {};
+          const name = part.tool || event.name;
+          if (name) yield ev.tool(name, state.input ?? part.input ?? {}, state.output);
+        } else if (event.type === 'step_finish') {
+          const t = part.tokens || event.tokens || {};
+          const input = (t.input || 0) + (t.cache?.read || 0) + (t.cache?.write || 0);
+          const output = (t.output || 0) + (t.reasoning || 0);
+          const cost = typeof part.cost === 'number' ? part.cost : event.cost;
+          usage.input += input;
+          usage.output += output;
+          if (typeof cost === 'number') usage.cost = (usage.cost || 0) + cost;
+          yield ev.usage(input, output, cost, true);
+        } else if (event.type === 'error') {
+          const message = errText(event.error || part.error || event);
+          yield ev.error(message);
+          throw fail(message, { sessionId, partial: text });
+        } else if (event.type === 'reasoning' && typeof part.text === 'string') {
+          yield ev.thinking(part.text);
+        }
+      }
+      const result = await proc.wait();
+      waited = true;
+      if (result.timedOut) throw new AgentError('TIMEOUT', `opencode timed out after ${o.timeoutMs}ms`, { agent: 'opencode', sessionId, partial: text });
+      if (result.aborted || o.signal?.aborted) throw new AgentError('ABORTED', 'Aborted', { agent: 'opencode', sessionId, partial: text });
+      if (result.exitCode !== 0) {
+        const message = stripAnsi(result.stderr) || `opencode exited with code ${result.exitCode}`;
+        if (/not logged in|unauthori[sz]ed|invalid api key|missing api key|\b401\b/i.test(message)) {
+          throw new AgentError('NOT_LOGGED_IN', message, { agent: 'opencode', sessionId, exitCode: result.exitCode, partial: text });
+        }
+        throw fail(message, { sessionId, exitCode: result.exitCode, partial: text });
+      }
+      if (!text.trim()) throw fail('opencode returned an empty response', { sessionId });
+      if (o.jsonSchema) {
+        const extracted = extractJson(text);
+        const errors = extracted.ok ? validateSchema(extracted.value, o.jsonSchema) : ['reply is not valid JSON'];
+        if (errors.length) throw fail(`jsonSchema validation failed: ${errors.slice(0, 5).join('; ')}`, { sessionId, partial: text });
+        json = extracted.value;
+        text = JSON.stringify(extracted.value);
+      }
+      return {
+        text,
+        sessionId,
+        usage,
+        exitCode: result.exitCode,
+        model,
+        durationMs: Date.now() - started,
+        timedOut: false,
+        ...(json !== undefined ? { json } : {}),
+      };
+    } finally {
+      if (!waited) {
+        proc.kill();
+        await Promise.race([proc.wait(), sleep(3000)]);
+      }
+    }
   },
 };
 
